@@ -1,0 +1,6 @@
+.git
+.gitignore
+target
+**/target
+bridges/apple-asr/.build
+examples/ws-asr-e2e/target

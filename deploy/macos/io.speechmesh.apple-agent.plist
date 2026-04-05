@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.speechmesh.apple-agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO_ROOT__/target/release/apple_agent</string>
+    <string>--gateway-url</string>
+    <string>__GATEWAY_URL__</string>
+    <string>--agent-id</string>
+    <string>__AGENT_ID__</string>
+    <string>--agent-name</string>
+    <string>__AGENT_NAME__</string>
+    <string>--provider-id</string>
+    <string>apple.asr</string>
+    <string>--shared-secret</string>
+    <string>__SHARED_SECRET__</string>
+    <string>--bridge-command</string>
+    <string>__REPO_ROOT__/bridges/apple-asr/.build/release/apple-asr-bridge</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO_ROOT__</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/SpeechMesh/apple-agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/SpeechMesh/apple-agent.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>RUST_LOG</key>
+    <string>info</string>
+  </dict>
+</dict>
+</plist>

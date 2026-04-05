@@ -1,0 +1,157 @@
+# Deployment
+
+SpeechMesh supports multiple deployment shapes, but the current production-grade path is a split runtime:
+
+- Linux or Kubernetes for the gateway and public ingress
+- macOS for Apple-native speech execution
+
+## Deployment Modes
+
+### Local Mock Mode
+
+Useful for protocol development and SDK tests.
+
+```bash
+cargo run -p speechmeshd --bin speechmeshd -- \
+  --listen 127.0.0.1:8765 \
+  --server-name speechmesh-dev \
+  --asr-bridge-mode mock \
+  --asr-provider-id mock.asr
+```
+
+Then validate with:
+
+```bash
+scripts/run_ws_asr_e2e.sh ws://127.0.0.1:8765/ws "speech mesh"
+```
+
+### Local Bridge Subprocess Mode
+
+Use `stdio` when the provider bridge should be launched locally by the gateway.
+
+```bash
+cargo run -p speechmeshd --bin speechmeshd -- \
+  --listen 127.0.0.1:8765 \
+  --asr-bridge-mode stdio \
+  --asr-provider-id bridge.asr \
+  --asr-bridge-command /path/to/bridge-binary
+```
+
+### Remote TCP Bridge Mode
+
+Use `tcp` when the bridge already exists on another host and should be reached over a trusted network.
+
+```bash
+cargo run -p speechmeshd --bin speechmeshd -- \
+  --listen 0.0.0.0:8765 \
+  --asr-bridge-mode tcp \
+  --asr-provider-id bridge.asr \
+  --asr-bridge-address bridge-host:9654
+```
+
+### Remote Agent Mode
+
+Use `agent` for the current Apple Speech production path.
+
+```bash
+cargo run -p speechmeshd --bin speechmeshd -- \
+  --listen 0.0.0.0:8765 \
+  --server-name speechmesh-gateway \
+  --asr-bridge-mode agent \
+  --asr-provider-id apple.asr \
+  --agent-shared-secret change-me
+```
+
+## Production Split: Linux Gateway + macOS Agent
+
+### Kubernetes Gateway
+
+The repository includes:
+
+- image build context: `Dockerfile`
+- Kubernetes manifest: `deploy/k8s/speechmesh.yaml`
+- deployment helper: `scripts/deploy_k8s.sh`
+
+Example:
+
+```bash
+./scripts/deploy_k8s.sh \
+  --image-tag 20260405-1 \
+  --ingress-host speechmesh.example.com \
+  --agent-shared-secret change-me \
+  --remote-host k3s-host
+```
+
+The helper script:
+
+1. builds a Linux image locally
+2. copies the image tar to the remote k3s host
+3. imports it into containerd
+4. applies `deploy/k8s/speechmesh.yaml` with runtime substitutions
+5. waits for the `apps/speechmesh` rollout
+
+### macOS Agent
+
+The repository includes:
+
+- LaunchAgent plist template: `deploy/macos/io.speechmesh.apple-agent.plist`
+- installer helper: `scripts/install_apple_agent_service.sh`
+
+Example:
+
+```bash
+./scripts/install_apple_agent_service.sh install \
+  --gateway-url wss://speechmesh.example.com/agent \
+  --agent-id apple-agent-1 \
+  --agent-name "Apple ASR Agent" \
+  --shared-secret change-me
+```
+
+That script:
+
+1. builds `apple_agent` and the Swift Apple bridge unless `--skip-build` is used
+2. renders a LaunchAgent plist into `~/Library/LaunchAgents`
+3. bootstraps the service through `launchctl`
+4. tails status through `launchctl print`
+
+Logs land in:
+
+- `~/Library/Logs/SpeechMesh/apple-agent.log`
+- `~/Library/Logs/SpeechMesh/apple-agent.err.log`
+
+## Network Shape
+
+In the current split deployment:
+
+- public or internal clients connect to `wss://<host>/ws`
+- the macOS agent connects outbound to `wss://<host>/agent`
+- the Apple bridge stays local to the macOS host and is launched by the agent
+
+This means the macOS host does not need a public listener for the bridge process.
+
+## Verification
+
+After deployment, verify from the repository root:
+
+```bash
+./scripts/run_ws_asr_e2e.sh wss://speechmesh.example.com/ws "speech mesh"
+./scripts/run_go_sdk_e2e.sh wss://speechmesh.example.com/ws "speech mesh"
+```
+
+## Security Notes
+
+Current hardening recommendations:
+
+- terminate TLS at the ingress layer and use `wss://` externally
+- set a non-default `--agent-shared-secret`
+- expose `/agent` only through the gateway, never the local Apple bridge directly
+- treat the macOS host as trusted infrastructure because it runs the platform-native provider process
+- prefer private networking between the ingress layer, gateway, and operator hosts
+
+What SpeechMesh does not yet provide natively:
+
+- end-user OAuth on the `/ws` endpoint
+- role-based access control inside the gateway
+- multi-tenant provider isolation
+
+If you need those today, put an auth proxy or ingress policy in front of the gateway.

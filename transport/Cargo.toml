@@ -1,0 +1,14 @@
+[package]
+name = "speechmesh-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+speechmesh-asr = { path = "../asr" }
+speechmesh-core = { path = "../core" }
+speechmesh-tts = { path = "../tts" }
+thiserror.workspace = true

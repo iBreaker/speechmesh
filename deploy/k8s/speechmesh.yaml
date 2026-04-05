@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: speechmesh
+  namespace: apps
+  labels:
+    app: speechmesh
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: speechmesh
+  template:
+    metadata:
+      labels:
+        app: speechmesh
+    spec:
+      containers:
+        - name: speechmeshd
+          image: speechmeshd:20260405-1
+          imagePullPolicy: IfNotPresent
+          args:
+            - --listen
+            - 0.0.0.0:8765
+            - --server-name
+            - speechmesh-gateway
+            - --asr-bridge-mode
+            - agent
+            - --asr-provider-id
+            - apple.asr
+            - --agent-shared-secret
+            - change-me
+          ports:
+            - name: ws
+              containerPort: 8765
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: ws
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: ws
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: speechmesh
+  namespace: apps
+  labels:
+    app: speechmesh
+spec:
+  selector:
+    app: speechmesh
+  ports:
+    - name: http
+      port: 80
+      targetPort: ws
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: speechmesh-int
+  namespace: apps
+  annotations:
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: speechmesh.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: speechmesh
+                port:
+                  number: 80

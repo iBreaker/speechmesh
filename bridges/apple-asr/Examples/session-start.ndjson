@@ -1,0 +1,3 @@
+{"type":"hello","request_id":"req-hello","payload":{}}
+{"type":"auth.request","request_id":"req-auth","payload":{}}
+{"type":"asr.start","request_id":"req-start","session_id":"sess-1","payload":{"locale":"en-US","should_report_partials":true,"requires_on_device":false,"input_format":{"encoding":"pcm_s16le","sample_rate_hz":16000,"channels":1}}}

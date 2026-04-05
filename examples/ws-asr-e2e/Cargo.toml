@@ -1,0 +1,17 @@
+[package]
+name = "speechmesh-ws-asr-e2e"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.50", features = ["derive"] }
+hound = "3.5.1"
+serde_json = "1.0.145"
+speechmesh-asr = { path = "../../asr" }
+speechmesh-core = { path = "../../core" }
+speechmesh-sdk = { path = "../../sdks/rust" }
+speechmesh-transport = { path = "../../transport" }
+tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "time"] }

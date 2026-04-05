@@ -1,0 +1,26 @@
+[package]
+name = "speechmeshd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+speechmesh-asr = { path = "../asr" }
+speechmesh-core = { path = "../core" }
+speechmesh-transport = { path = "../transport" }
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rustls.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

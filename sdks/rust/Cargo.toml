@@ -1,0 +1,20 @@
+[package]
+name = "speechmesh-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+futures-util.workspace = true
+rustls.workspace = true
+serde_json.workspace = true
+speechmesh-asr = { path = "../../asr" }
+speechmesh-core = { path = "../../core" }
+speechmesh-transport = { path = "../../transport" }
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+
+[dev-dependencies]
+speechmeshd = { path = "../../speechmeshd" }
+tokio = { workspace = true, features = ["test-util"] }
