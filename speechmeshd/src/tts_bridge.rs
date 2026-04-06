@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -14,6 +15,7 @@ use speechmesh_core::{
 use speechmesh_transport::VoiceListRequest;
 use speechmesh_tts::{AudioChunk, StreamRequest, SynthesisInputKind, TtsSession, VoiceDescriptor};
 use tokio::sync::mpsc;
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 use crate::bridge_support::BridgeError;
 
@@ -607,6 +609,44 @@ struct MiniMaxAudioData {
     audio_base64: Option<String>,
 }
 
+#[derive(Debug, serde::Serialize)]
+struct MiniMaxWsTaskStart<'a> {
+    model: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<&'a str>,
+    stream: bool,
+    voice_setting: Value,
+    audio_setting: Value,
+    #[serde(skip_serializing_if = "Value::is_null")]
+    extra: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct MiniMaxWsEvent {
+    #[serde(default)]
+    event: Option<String>,
+    #[serde(default)]
+    data: Option<MiniMaxWsData>,
+    #[serde(default)]
+    _extra_info: Option<MiniMaxWsExtraInfo>,
+    #[serde(default)]
+    base_resp: Option<MiniMaxBaseResp>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MiniMaxWsData {
+    #[serde(default)]
+    audio: Option<String>,
+    #[serde(default)]
+    status: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MiniMaxWsExtraInfo {
+    #[serde(default)]
+    _audio_length: Option<u64>,
+}
+
 #[async_trait]
 impl TtsBridge for MeloHttpTtsBridge {
     fn descriptors(&self) -> Vec<ProviderDescriptor> {
@@ -621,8 +661,10 @@ impl TtsBridge for MeloHttpTtsBridge {
                 RuntimeMode::LocalDaemon,
             )
             .with_capability(Capability::enabled("voice-list"))
+            .with_capability(Capability::enabled("streaming-input"))
             .with_capability(Capability::enabled("buffered-input"))
             .with_capability(Capability::enabled("buffered-text-input"))
+            .with_capability(Capability::enabled("streaming-output"))
             .with_capability(Capability::enabled("buffered-output"))
             .with_capability(Capability::enabled("rate-control"))
             .with_capability(Capability::enabled("wav-output")),
@@ -822,8 +864,10 @@ impl TtsBridge for QwenHttpTtsBridge {
                 RuntimeMode::LocalDaemon,
             )
             .with_capability(Capability::enabled("voice-list"))
+            .with_capability(Capability::enabled("streaming-input"))
             .with_capability(Capability::enabled("buffered-input"))
             .with_capability(Capability::enabled("buffered-text-input"))
+            .with_capability(Capability::enabled("streaming-output"))
             .with_capability(Capability::enabled("buffered-output"))
             .with_capability(Capability::enabled("rate-control"))
             .with_capability(Capability::enabled("pitch-control"))
@@ -1056,21 +1100,31 @@ impl TtsBridge for MiniMaxHttpTtsBridge {
     ) -> Result<BridgeTtsSessionHandle, BridgeError> {
         let input_mode = requested_tts_input_mode(&request.options);
         let output_mode = requested_tts_output_mode(&request.options);
-        ensure_tts_modes_supported(input_mode, output_mode, false, false, "MiniMax TTS")?;
+        ensure_tts_modes_supported(input_mode, output_mode, true, true, "MiniMax TTS")?;
         if request.input_kind != SynthesisInputKind::Text {
             return Err(BridgeError::Unavailable(
                 "MiniMax TTS bridge currently supports text input only".to_string(),
             ));
         }
 
+        let default_encoding = if matches!(output_mode, StreamMode::Streaming) {
+            AudioEncoding::Mp3
+        } else {
+            AudioEncoding::Wav
+        };
         let desired_format = normalize_output_format_name(
             request
                 .output_format
                 .as_ref()
                 .map(|format| format.encoding)
-                .or(Some(AudioEncoding::Wav)),
+                .or(Some(default_encoding)),
             &self.config.default_format,
         )?;
+        if matches!(output_mode, StreamMode::Streaming) && desired_format == "wav" {
+            return Err(BridgeError::Unavailable(
+                "MiniMax streaming TTS does not support WAV output; use mp3 or flac".to_string(),
+            ));
+        }
         let accepted_output_format = Some(AudioFormat {
             encoding: audio_encoding_from_name(&desired_format)?,
             sample_rate_hz: self.config.default_sample_rate_hz,
@@ -1092,9 +1146,41 @@ impl TtsBridge for MiniMaxHttpTtsBridge {
         let config = self.config.clone();
         let chunk_size_bytes = self.config.chunk_size_bytes.max(1);
         let options = request.options.clone();
+        let output_encoding = desired_format;
 
         tokio::spawn(async move {
             let mut buffer = String::new();
+            if matches!(output_mode, StreamMode::Streaming) {
+                let result = run_minimax_ws_session(
+                    &config,
+                    &options,
+                    input_mode,
+                    &output_encoding,
+                    output_format.clone(),
+                    &mut command_rx,
+                    &event_tx,
+                )
+                .await;
+                match result {
+                    Ok(reason) => {
+                        let _ = event_tx.send(BridgeTtsEvent::Ended { reason }).await;
+                    }
+                    Err(error) => {
+                        let _ = event_tx
+                            .send(BridgeTtsEvent::Error {
+                                message: error.to_string(),
+                            })
+                            .await;
+                        let _ = event_tx
+                            .send(BridgeTtsEvent::Ended {
+                                reason: Some("provider_error".to_string()),
+                            })
+                            .await;
+                    }
+                }
+                return;
+            }
+
             while let Some(command) = command_rx.recv().await {
                 match command {
                     BridgeTtsCommand::AppendInput(delta) => buffer.push_str(&delta),
@@ -1435,6 +1521,343 @@ async fn synthesize_minimax(
     Err(BridgeError::Protocol(
         "MiniMax TTS response missing audio payload".to_string(),
     ))
+}
+
+async fn run_minimax_ws_session(
+    config: &MiniMaxHttpTtsBridgeConfig,
+    options: &speechmesh_tts::SynthesisOptions,
+    input_mode: StreamMode,
+    output_encoding: &str,
+    output_format: Option<AudioFormat>,
+    command_rx: &mut mpsc::Receiver<BridgeTtsCommand>,
+    event_tx: &mpsc::Sender<BridgeTtsEvent>,
+) -> Result<Option<String>, BridgeError> {
+    let url = minimax_ws_url(&config.base_url, &config.group_id);
+    let (socket, _) = connect_async(&url).await.map_err(|error| {
+        BridgeError::Unavailable(format!(
+            "failed to connect to MiniMax TTS websocket {url}: {error}"
+        ))
+    })?;
+    let (mut sink, mut source) = socket.split();
+
+    let (voice_setting, audio_setting, extra, model) =
+        build_minimax_ws_settings(config, options, output_encoding)?;
+    send_minimax_ws_message(
+        &mut sink,
+        json!({
+            "event": "task_start",
+            "authorization": format!("Bearer {}", config.api_key),
+            "group_id": config.group_id,
+            "data": MiniMaxWsTaskStart {
+                model: &model,
+                text: None,
+                stream: true,
+                voice_setting,
+                audio_setting,
+                extra,
+            }
+        }),
+    )
+    .await?;
+
+    let mut started = false;
+    let mut committed = false;
+    let mut buffered = String::new();
+    let mut pending_chunks: Vec<String> = Vec::new();
+    let mut chunk_sequence = 0_u64;
+
+    loop {
+        tokio::select! {
+            maybe_message = source.next() => {
+                let message = match maybe_message {
+                    Some(Ok(message)) => message,
+                    Some(Err(error)) => {
+                        return Err(BridgeError::Disconnected(format!("MiniMax websocket read failed: {error}")));
+                    }
+                    None => {
+                        return if committed {
+                            Ok(None)
+                        } else {
+                            Err(BridgeError::Disconnected("MiniMax websocket closed before synthesis completed".to_string()))
+                        };
+                    }
+                };
+
+                match message {
+                    Message::Text(text) => {
+                        let event: MiniMaxWsEvent = serde_json::from_str(&text).map_err(|error| {
+                            BridgeError::Protocol(format!("failed to decode MiniMax websocket event: {error}"))
+                        })?;
+                        if let Some(base_resp) = event.base_resp {
+                            if base_resp.status_code.unwrap_or(0) != 0 {
+                                return Err(BridgeError::Unavailable(
+                                    base_resp
+                                        .status_msg
+                                        .unwrap_or_else(|| "MiniMax websocket provider error".to_string()),
+                                ));
+                            }
+                        }
+
+                        match event.event.as_deref() {
+                            Some("task_started") => {
+                                started = true;
+                                if !pending_chunks.is_empty() {
+                                    for chunk in pending_chunks.drain(..) {
+                                        send_minimax_ws_message(
+                                            &mut sink,
+                                            json!({
+                                                "event": "task_continue",
+                                                "authorization": format!("Bearer {}", config.api_key),
+                                                "group_id": config.group_id,
+                                                "data": { "text": chunk }
+                                            }),
+                                        ).await?;
+                                    }
+                                }
+                                if committed && matches!(input_mode, StreamMode::Buffered) {
+                                    send_minimax_ws_message(
+                                        &mut sink,
+                                        json!({
+                                            "event": "task_finish",
+                                            "authorization": format!("Bearer {}", config.api_key),
+                                            "group_id": config.group_id
+                                        }),
+                                    ).await?;
+                                }
+                            }
+                            Some("task_finished") => return Ok(None),
+                            Some("task_failed") => {
+                                return Err(BridgeError::Unavailable("MiniMax websocket task failed".to_string()));
+                            }
+                            _ => {}
+                        }
+
+                        if let Some(data) = event.data {
+                            if let Some(audio) = data.audio {
+                                chunk_sequence += 1;
+                                let bytes = decode_minimax_audio(&audio)?;
+                                event_tx
+                                    .send(BridgeTtsEvent::Audio {
+                                        chunk: AudioChunk {
+                                            bytes,
+                                            sequence: chunk_sequence,
+                                            is_final: data.status == Some(2),
+                                            format: if chunk_sequence == 1 { output_format.clone() } else { None },
+                                        }
+                                    })
+                                    .await
+                                    .map_err(|_| BridgeError::Disconnected("bridge event channel closed".to_string()))?;
+                            }
+                        }
+                    }
+                    Message::Binary(bytes) => {
+                        chunk_sequence += 1;
+                        event_tx
+                            .send(BridgeTtsEvent::Audio {
+                                chunk: AudioChunk {
+                                    bytes: bytes.to_vec(),
+                                    sequence: chunk_sequence,
+                                    is_final: false,
+                                    format: if chunk_sequence == 1 { output_format.clone() } else { None },
+                                }
+                            })
+                            .await
+                            .map_err(|_| BridgeError::Disconnected("bridge event channel closed".to_string()))?;
+                    }
+                    Message::Ping(payload) => {
+                        sink.send(Message::Pong(payload)).await.map_err(|error| {
+                            BridgeError::Disconnected(format!("MiniMax websocket pong failed: {error}"))
+                        })?;
+                    }
+                    Message::Close(_) => {
+                        return if committed {
+                            Ok(None)
+                        } else {
+                            Err(BridgeError::Disconnected("MiniMax websocket closed early".to_string()))
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            maybe_command = command_rx.recv() => {
+                let Some(command) = maybe_command else {
+                    return Ok(Some("stopped".to_string()));
+                };
+                match command {
+                    BridgeTtsCommand::AppendInput(delta) => {
+                        if delta.is_empty() {
+                            continue;
+                        }
+                        if matches!(input_mode, StreamMode::Buffered) {
+                            buffered.push_str(&delta);
+                        } else if started {
+                            send_minimax_ws_message(
+                                &mut sink,
+                                json!({
+                                    "event": "task_continue",
+                                    "authorization": format!("Bearer {}", config.api_key),
+                                    "group_id": config.group_id,
+                                    "data": { "text": delta }
+                                }),
+                            ).await?;
+                        } else {
+                            pending_chunks.push(delta);
+                        }
+                    }
+                    BridgeTtsCommand::Commit => {
+                        committed = true;
+                        if matches!(input_mode, StreamMode::Buffered) {
+                            let text = buffered.trim().to_string();
+                            if text.is_empty() {
+                                return Err(BridgeError::Unavailable("TTS input buffer is empty".to_string()));
+                            }
+                            if started {
+                                send_minimax_ws_message(
+                                    &mut sink,
+                                    json!({
+                                        "event": "task_continue",
+                                        "authorization": format!("Bearer {}", config.api_key),
+                                        "group_id": config.group_id,
+                                        "data": { "text": text }
+                                    }),
+                                ).await?;
+                                send_minimax_ws_message(
+                                    &mut sink,
+                                    json!({
+                                        "event": "task_finish",
+                                        "authorization": format!("Bearer {}", config.api_key),
+                                        "group_id": config.group_id
+                                    }),
+                                ).await?;
+                            } else {
+                                pending_chunks.push(text);
+                            }
+                        } else if started {
+                            send_minimax_ws_message(
+                                &mut sink,
+                                json!({
+                                    "event": "task_finish",
+                                    "authorization": format!("Bearer {}", config.api_key),
+                                    "group_id": config.group_id
+                                }),
+                            ).await?;
+                        }
+                    }
+                    BridgeTtsCommand::Stop => {
+                        let _ = send_minimax_ws_message(
+                            &mut sink,
+                            json!({
+                                "event": "task_finish",
+                                "authorization": format!("Bearer {}", config.api_key),
+                                "group_id": config.group_id
+                            }),
+                        ).await;
+                        return Ok(Some("stopped".to_string()));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn minimax_ws_url(base_url: &str, group_id: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    let ws_base = if let Some(rest) = trimmed.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = trimmed.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        trimmed.to_string()
+    };
+    format!("{ws_base}/ws/v1/t2a_v2?GroupId={group_id}")
+}
+
+fn build_minimax_ws_settings(
+    config: &MiniMaxHttpTtsBridgeConfig,
+    options: &speechmesh_tts::SynthesisOptions,
+    output_encoding: &str,
+) -> Result<(Value, Value, Value, String), BridgeError> {
+    let voice_id = options
+        .provider_options
+        .get("voice_id")
+        .and_then(Value::as_str)
+        .or(options.voice.as_deref())
+        .unwrap_or(&config.default_voice_id);
+    let model = options
+        .provider_options
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or(&config.default_model)
+        .to_string();
+
+    let mut voice_setting = Map::new();
+    voice_setting.insert("voice_id".to_string(), Value::String(voice_id.to_string()));
+    if let Some(speed) = options.rate {
+        voice_setting.insert("speed".to_string(), json!(speed));
+    }
+    if let Some(pitch) = options.pitch {
+        voice_setting.insert("pitch".to_string(), json!(pitch));
+    }
+    if let Some(volume) = options.volume {
+        voice_setting.insert("vol".to_string(), json!(volume));
+    }
+    if let Some(emotion) = options
+        .provider_options
+        .get("emotion")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            options
+                .provider_options
+                .get("emotion_tag")
+                .and_then(Value::as_str)
+        })
+    {
+        voice_setting.insert("emotion".to_string(), Value::String(emotion.to_string()));
+    }
+
+    let mut audio_setting = Map::new();
+    audio_setting.insert(
+        "sample_rate".to_string(),
+        json!(config.default_sample_rate_hz),
+    );
+    audio_setting.insert(
+        "format".to_string(),
+        Value::String(output_encoding.to_uppercase()),
+    );
+
+    let extra = filter_reserved_provider_options(
+        &options.provider_options,
+        &[
+            "route",
+            "voice_id",
+            "model",
+            "format",
+            "emotion",
+            "emotion_tag",
+            "input_mode",
+            "output_mode",
+        ],
+    );
+    Ok((
+        Value::Object(voice_setting),
+        Value::Object(audio_setting),
+        extra,
+        model,
+    ))
+}
+
+async fn send_minimax_ws_message<S>(
+    sink: &mut futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<S>, Message>,
+    payload: Value,
+) -> Result<(), BridgeError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    sink.send(Message::Text(payload.to_string().into()))
+        .await
+        .map_err(|error| {
+            BridgeError::Disconnected(format!("MiniMax websocket write failed: {error}"))
+        })
 }
 
 async fn emit_audio_chunks(
