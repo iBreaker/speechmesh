@@ -4,6 +4,7 @@ use futures_util::{SinkExt, StreamExt};
 use speechmesh_core::{RequestId, SessionId};
 use speechmesh_transport::{
     ClientMessage, DiscoverRequest, DiscoverResult, EmptyPayload, HelloRequest, ServerMessage,
+    TtsInputAppendPayload, VoiceListRequest, VoiceListResult,
 };
 use thiserror::Error;
 use tokio::net::TcpStream;
@@ -20,6 +21,10 @@ pub use speechmesh_core::{
 pub use speechmesh_transport::{
     AsrResultPayload, AsrWordPayload, DiscoverResult as ProviderDiscoverResult, HelloResponse,
     ServerMessage as GatewayMessage, SessionEndedPayload, SessionStartedPayload,
+    TtsAudioDeltaPayload, TtsAudioDonePayload, VoiceListResult as ProviderVoiceListResult,
+};
+pub use speechmesh_tts::{
+    StreamRequest as TtsStreamRequest, SynthesisInputKind, SynthesisOptions, VoiceDescriptor,
 };
 
 #[derive(Debug, Clone)]
@@ -52,6 +57,7 @@ pub struct Client {
     websocket: WebSocketStream<MaybeTlsStream<TcpStream>>,
     next_request_id: u64,
     active_session_id: Option<SessionId>,
+    active_session_domain: Option<CapabilityDomain>,
 }
 
 impl Client {
@@ -65,6 +71,7 @@ impl Client {
             websocket,
             next_request_id: 0,
             active_session_id: None,
+            active_session_domain: None,
         };
         client.handshake().await?;
         Ok(client)
@@ -76,6 +83,10 @@ impl Client {
 
     pub fn active_session_id(&self) -> Option<&SessionId> {
         self.active_session_id.as_ref()
+    }
+
+    pub fn active_session_domain(&self) -> Option<CapabilityDomain> {
+        self.active_session_domain
     }
 
     pub async fn discover(
@@ -113,6 +124,44 @@ impl Client {
 
     pub async fn discover_asr(&mut self) -> Result<DiscoverResult, ClientError> {
         self.discover(vec![CapabilityDomain::Asr]).await
+    }
+
+    pub async fn discover_tts(&mut self) -> Result<DiscoverResult, ClientError> {
+        self.discover(vec![CapabilityDomain::Tts]).await
+    }
+
+    pub async fn list_tts_voices(
+        &mut self,
+        provider: ProviderSelector,
+        language: Option<String>,
+    ) -> Result<VoiceListResult, ClientError> {
+        let request_id = self.next_request_id();
+        self.send_json(ClientMessage::TtsVoices {
+            request_id: request_id.clone(),
+            payload: VoiceListRequest { provider, language },
+        })
+        .await?;
+
+        loop {
+            match self.recv().await? {
+                ServerMessage::TtsVoicesResult {
+                    request_id: response_id,
+                    payload,
+                } if response_id == request_id => return Ok(payload),
+                ServerMessage::Error {
+                    request_id: response_id,
+                    session_id,
+                    payload,
+                } if response_id.as_ref() == Some(&request_id) => {
+                    return Err(ClientError::Server {
+                        request_id: response_id,
+                        session_id,
+                        error: payload.error,
+                    });
+                }
+                _ => {}
+            }
+        }
     }
 
     pub async fn start_asr(
@@ -162,10 +211,56 @@ impl Client {
         }
     }
 
-    pub async fn send_audio(&mut self, chunk: &[u8]) -> Result<(), ClientError> {
-        if self.active_session_id.is_none() {
-            return Err(ClientError::NoActiveSession);
+    pub async fn start_tts(
+        &mut self,
+        request: speechmesh_tts::StreamRequest,
+    ) -> Result<SessionStarted, ClientError> {
+        if self.active_session_id.is_some() {
+            return Err(ClientError::Protocol(
+                "speechmesh server allows only one active session per connection".to_string(),
+            ));
         }
+
+        let request_id = self.next_request_id();
+        self.send_json(ClientMessage::TtsStart {
+            request_id: request_id.clone(),
+            payload: request,
+        })
+        .await?;
+
+        loop {
+            match self.recv().await? {
+                ServerMessage::SessionStarted {
+                    request_id: response_id,
+                    session_id,
+                    payload,
+                } if response_id.as_ref() == Some(&request_id) => {
+                    self.active_session_id = Some(session_id.clone());
+                    self.active_session_domain = Some(payload.domain);
+                    return Ok(SessionStarted {
+                        request_id: response_id,
+                        session_id,
+                        payload,
+                    });
+                }
+                ServerMessage::Error {
+                    request_id: response_id,
+                    session_id,
+                    payload,
+                } if response_id.as_ref() == Some(&request_id) => {
+                    return Err(ClientError::Server {
+                        request_id: response_id,
+                        session_id,
+                        error: payload.error,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub async fn send_audio(&mut self, chunk: &[u8]) -> Result<(), ClientError> {
+        self.ensure_active_session_domain(CapabilityDomain::Asr)?;
         self.websocket
             .send(Message::Binary(chunk.to_vec().into()))
             .await
@@ -177,9 +272,39 @@ impl Client {
             .active_session_id
             .clone()
             .ok_or(ClientError::NoActiveSession)?;
-        self.send_json(ClientMessage::AsrCommit {
+        match self.active_session_domain {
+            Some(CapabilityDomain::Asr) => {
+                self.send_json(ClientMessage::AsrCommit {
+                    session_id,
+                    payload: EmptyPayload::default(),
+                })
+                .await
+            }
+            Some(CapabilityDomain::Tts) => {
+                self.send_json(ClientMessage::TtsCommit {
+                    session_id,
+                    payload: EmptyPayload::default(),
+                })
+                .await
+            }
+            Some(domain) => Err(ClientError::Protocol(format!(
+                "commit is unsupported for active session domain {domain:?}"
+            ))),
+            None => Err(ClientError::NoActiveSession),
+        }
+    }
+
+    pub async fn append_tts_input(&mut self, delta: impl Into<String>) -> Result<(), ClientError> {
+        self.ensure_active_session_domain(CapabilityDomain::Tts)?;
+        let session_id = self
+            .active_session_id
+            .clone()
+            .ok_or(ClientError::NoActiveSession)?;
+        self.send_json(ClientMessage::TtsInputAppend {
             session_id,
-            payload: EmptyPayload::default(),
+            payload: TtsInputAppendPayload {
+                delta: delta.into(),
+            },
         })
         .await
     }
@@ -280,15 +405,31 @@ impl Client {
 
     fn observe_message(&mut self, message: &ServerMessage) {
         match message {
-            ServerMessage::SessionStarted { session_id, .. } => {
+            ServerMessage::SessionStarted {
+                session_id,
+                payload,
+                ..
+            } => {
                 self.active_session_id = Some(session_id.clone());
+                self.active_session_domain = Some(payload.domain);
             }
             ServerMessage::SessionEnded { session_id, .. } => {
                 if self.active_session_id.as_ref() == Some(session_id) {
                     self.active_session_id = None;
+                    self.active_session_domain = None;
                 }
             }
             _ => {}
+        }
+    }
+
+    fn ensure_active_session_domain(&self, expected: CapabilityDomain) -> Result<(), ClientError> {
+        match self.active_session_domain {
+            Some(actual) if actual == expected => Ok(()),
+            Some(actual) => Err(ClientError::Protocol(format!(
+                "active session domain mismatch: expected {expected:?}, got {actual:?}"
+            ))),
+            None => Err(ClientError::NoActiveSession),
         }
     }
 }

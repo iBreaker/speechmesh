@@ -8,7 +8,9 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use speechmesh_asr::{AsrSession, StreamRequest, Transcript};
-use speechmesh_core::{Capability, CapabilityDomain, ProviderDescriptor, RuntimeMode, SessionId};
+use speechmesh_core::{
+    Capability, CapabilityDomain, ProviderDescriptor, RuntimeMode, SessionId, StreamMode,
+};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time::timeout;
 use tokio_tungstenite::WebSocketStream;
@@ -16,10 +18,11 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, info, warn};
 
-use crate::bridge::{
+use crate::asr_bridge::{
     AsrBridge, BridgeAsrEvent, BridgeAsrSessionController, BridgeAsrSessionHandle, BridgeCommand,
-    BridgeError, StdioAsrBridge, StdioAsrBridgeConfig,
+    StdioAsrBridge, StdioAsrBridgeConfig,
 };
+use crate::bridge_support::BridgeError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmptyPayload {}
@@ -424,6 +427,7 @@ impl AgentRegistry {
 #[derive(Debug, Clone)]
 pub struct RemoteAgentAsrBridgeConfig {
     pub provider_id: String,
+    pub display_name: Option<String>,
     pub start_timeout: Duration,
 }
 
@@ -444,11 +448,18 @@ impl AsrBridge for RemoteAgentAsrBridge {
         vec![
             ProviderDescriptor::new(
                 self.config.provider_id.clone(),
-                "Remote Agent ASR Bridge",
+                self.config
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| "Remote Agent ASR Bridge".to_string()),
                 CapabilityDomain::Asr,
                 RuntimeMode::RemoteGateway,
             )
             .with_capability(Capability::enabled("streaming-input"))
+            .with_capability(Capability::enabled("buffered-input"))
+            .with_capability(Capability::enabled("streaming-output"))
+            .with_capability(Capability::enabled("buffered-output"))
+            .with_capability(Capability::enabled("on-device"))
             .with_capability(Capability::enabled("agent-backhaul")),
         ]
     }
@@ -480,6 +491,29 @@ impl AsrBridge for RemoteAgentAsrBridge {
             id: SessionId::new(),
             provider_id: self.config.provider_id.clone(),
             accepted_input_format: request.input_format.clone(),
+            input_mode: request
+                .options
+                .provider_options
+                .get("input_mode")
+                .and_then(serde_json::Value::as_str)
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| value == "buffered")
+                .map(|_| StreamMode::Buffered)
+                .unwrap_or(StreamMode::Streaming),
+            output_mode: if request
+                .options
+                .provider_options
+                .get("output_mode")
+                .and_then(serde_json::Value::as_str)
+                .map(|value| value.trim().to_ascii_lowercase())
+                .as_deref()
+                == Some("streaming")
+                || request.options.interim_results
+            {
+                StreamMode::Streaming
+            } else {
+                StreamMode::Buffered
+            },
         };
         let (command_tx, command_rx) = mpsc::channel::<BridgeCommand>(64);
         let (event_tx, event_rx) = mpsc::channel::<BridgeAsrEvent>(64);
@@ -727,6 +761,7 @@ async fn run_local_agent_once(config: &LocalAgentConfig) -> Result<(), BridgeErr
 
     let bridge = Arc::new(StdioAsrBridge::new(StdioAsrBridgeConfig {
         provider_id: config.provider_id.clone(),
+        display_name: None,
         command: config.bridge_command.clone(),
         args: config.bridge_args.clone(),
     }));

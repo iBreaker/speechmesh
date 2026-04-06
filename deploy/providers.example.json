@@ -1,0 +1,23 @@
+{
+  "format": "speechmesh/asr-provider-state.v1",
+  "providers": [
+    {
+      "provider_id": "apple.asr",
+      "display_name": "Apple Speech",
+      "bridge_mode": "agent",
+      "start_timeout_secs": 10
+    },
+    {
+      "provider_id": "sensevoice.asr",
+      "display_name": "SenseVoice",
+      "bridge_mode": "tcp",
+      "address": "127.0.0.1:9901"
+    },
+    {
+      "provider_id": "paraformer.asr",
+      "display_name": "Paraformer Streaming",
+      "bridge_mode": "tcp",
+      "address": "127.0.0.1:9902"
+    }
+  ]
+}

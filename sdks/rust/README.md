@@ -8,10 +8,14 @@ Current features:
 
 - connect to the WebSocket gateway
 - perform the `hello` handshake automatically
-- discover providers
+- discover ASR and TTS providers
+- list TTS voices
 - start a streaming ASR session
+- start a TTS session
 - stream PCM audio chunks as binary frames
+- append TTS input text incrementally
 - receive revision-based `asr.result` events
+- receive `tts.audio.delta` and `tts.audio.done` events through `ServerMessage`
 - commit, stop, and close the active session
 
 ## Key Types
@@ -19,7 +23,9 @@ Current features:
 - `Client`
 - `ClientConfig`
 - `StreamRequest`
+- `TtsStreamRequest`
 - `RecognitionOptions`
+- `SynthesisOptions`
 - `ServerMessage`
 
 ## Example
@@ -55,6 +61,30 @@ while let ServerMessage::AsrResult { payload, .. } = client.recv().await? {
 }
 
 println!("session: {}", started.session_id);
+# Ok(())
+# }
+```
+
+TTS example:
+
+```rust,no_run
+use speechmesh_sdk::{
+    Client, ClientConfig, ProviderSelector, SynthesisInputKind, SynthesisOptions, TtsStreamRequest,
+};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let mut client = Client::connect(ClientConfig::new("wss://speechmesh.example.com/ws")).await?;
+let _started = client.start_tts(TtsStreamRequest {
+    provider: ProviderSelector::default(),
+    input_kind: SynthesisInputKind::Text,
+    output_format: None,
+    options: SynthesisOptions {
+        stream: true,
+        ..SynthesisOptions::default()
+    },
+}).await?;
+client.append_tts_input("hello from speechmesh").await?;
+client.commit().await?;
 # Ok(())
 # }
 ```

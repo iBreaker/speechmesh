@@ -8,10 +8,14 @@ Current features:
 
 - connect to the WebSocket gateway
 - perform the `hello` handshake automatically
-- discover providers
+- discover ASR and TTS providers
+- list TTS voices
 - start a streaming ASR session
+- start a TTS session
 - stream PCM audio chunks as binary frames
+- append TTS input text incrementally
 - receive revision-based `asr.result` events
+- receive `tts.audio.delta` and `tts.audio.done` events
 - commit, stop, and close the active session
 
 ## Key Types
@@ -19,7 +23,9 @@ Current features:
 - `Client`
 - `ClientConfig`
 - `StreamRequest`
+- `TtsStreamRequest`
 - `RecognitionOptions`
+- `TtsSynthesisOptions`
 - `Event`
 
 ## Example
@@ -43,6 +49,35 @@ if err != nil {
     return err
 }
 _ = started
+```
+
+TTS example:
+
+```go
+ctx := context.Background()
+client, err := speechmesh.Dial(ctx, speechmesh.ClientConfig{
+	URL: "wss://speechmesh.example.com/ws",
+})
+if err != nil {
+	return err
+}
+defer client.Close()
+
+_, _, err = client.StartTTS(ctx, speechmesh.TtsStreamRequest{
+	Provider:  speechmesh.DefaultProviderSelector(),
+	InputKind: speechmesh.SynthesisInputKindText,
+	Options: speechmesh.TtsSynthesisOptions{Stream: true},
+})
+if err != nil {
+	return err
+}
+
+if err := client.TtsAppendInput(ctx, "hello from speechmesh"); err != nil {
+	return err
+}
+if err := client.Commit(ctx); err != nil {
+	return err
+}
 ```
 
 ## Validation

@@ -2,12 +2,14 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use futures_util::{SinkExt, StreamExt};
 use speechmesh_core::{CapabilityDomain, ErrorInfo, RequestId, SessionId};
 use speechmesh_transport::{
     AsrResultPayload, AsrWordPayload, ClientMessage, DiscoverRequest, DiscoverResult, EmptyPayload,
     ErrorPayload, HelloResponse, ServerMessage, SessionEndedPayload, SessionStartedPayload,
-    TransportKind,
+    TransportKind, TtsAudioDeltaPayload, TtsAudioDonePayload, VoiceListResult,
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -18,7 +20,9 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{error, info, warn};
 
 use crate::agent::{AgentRegistry, handle_agent_connection};
-use crate::bridge::{BridgeAsrEvent, BridgeAsrSessionHandle, BridgeError, SharedAsrBridge};
+use crate::asr_bridge::{BridgeAsrEvent, BridgeAsrSessionHandle, SharedAsrBridge};
+use crate::bridge_support::BridgeError;
+use crate::tts_bridge::{BridgeTtsEvent, BridgeTtsSessionHandle, SharedTtsBridge};
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -30,6 +34,7 @@ pub struct ServerConfig {
 pub async fn run_server(
     config: ServerConfig,
     asr_bridge: SharedAsrBridge,
+    tts_bridge: Option<SharedTtsBridge>,
     agent_registry: Option<AgentRegistry>,
 ) -> Result<()> {
     let listener = TcpListener::bind(config.listen)
@@ -39,12 +44,13 @@ pub async fn run_server(
 
     loop {
         let (stream, peer) = listener.accept().await.context("accept failed")?;
-        let bridge = asr_bridge.clone();
+        let asr = asr_bridge.clone();
+        let tts = tts_bridge.clone();
         let registry = agent_registry.clone();
         let per_connection_config = config.clone();
         tokio::spawn(async move {
             if let Err(error) =
-                handle_connection(stream, peer, per_connection_config, bridge, registry).await
+                handle_connection(stream, peer, per_connection_config, asr, tts, registry).await
             {
                 warn!("connection {peer} failed: {error:?}");
             }
@@ -52,9 +58,32 @@ pub async fn run_server(
     }
 }
 
-struct ActiveAsrSession {
-    session_id: SessionId,
-    bridge: BridgeAsrSessionHandle,
+enum ActiveSession {
+    Asr {
+        session_id: SessionId,
+        bridge: BridgeAsrSessionHandle,
+    },
+    Tts {
+        session_id: SessionId,
+        bridge: BridgeTtsSessionHandle,
+    },
+}
+
+impl ActiveSession {
+    fn session_id(&self) -> &SessionId {
+        match self {
+            ActiveSession::Asr { session_id, .. } | ActiveSession::Tts { session_id, .. } => {
+                session_id
+            }
+        }
+    }
+
+    async fn stop(&self) -> Result<(), BridgeError> {
+        match self {
+            ActiveSession::Asr { bridge, .. } => bridge.stop().await,
+            ActiveSession::Tts { bridge, .. } => bridge.stop().await,
+        }
+    }
 }
 
 async fn handle_connection(
@@ -62,6 +91,7 @@ async fn handle_connection(
     peer: SocketAddr,
     config: ServerConfig,
     asr_bridge: SharedAsrBridge,
+    tts_bridge: Option<SharedTtsBridge>,
     agent_registry: Option<AgentRegistry>,
 ) -> Result<()> {
     let (websocket, path) = accept_websocket_with_path(stream)
@@ -78,7 +108,7 @@ async fn handle_connection(
             .map_err(anyhow::Error::from);
     }
 
-    handle_client_websocket(websocket, peer, config, asr_bridge).await
+    handle_client_websocket(websocket, peer, config, asr_bridge, tts_bridge).await
 }
 
 async fn handle_client_websocket(
@@ -86,9 +116,10 @@ async fn handle_client_websocket(
     peer: SocketAddr,
     config: ServerConfig,
     asr_bridge: SharedAsrBridge,
+    tts_bridge: Option<SharedTtsBridge>,
 ) -> Result<()> {
     let (mut sink, mut source) = websocket.split();
-    let (out_tx, mut out_rx) = mpsc::channel::<ServerMessage>(64);
+    let (out_tx, mut out_rx) = mpsc::channel::<ServerMessage>(128);
     let writer = tokio::spawn(async move {
         while let Some(event) = out_rx.recv().await {
             let encoded = serde_json::to_string(&event)?;
@@ -97,7 +128,7 @@ async fn handle_client_websocket(
         Result::<(), anyhow::Error>::Ok(())
     });
 
-    let mut active_asr: Option<ActiveAsrSession> = None;
+    let mut active_session: Option<ActiveSession> = None;
     while let Some(frame) = source.next().await {
         let frame = frame.context("read websocket frame failed")?;
         match frame {
@@ -109,15 +140,18 @@ async fn handle_client_websocket(
                             message,
                             &config,
                             &asr_bridge,
+                            tts_bridge.as_ref(),
                             &out_tx,
-                            &mut active_asr,
+                            &mut active_session,
                         )
                         .await
                         {
                             send_error(
                                 &out_tx,
                                 None,
-                                active_asr.as_ref().map(|s| s.session_id.clone()),
+                                active_session
+                                    .as_ref()
+                                    .map(|session| session.session_id().clone()),
                                 error,
                             )
                             .await;
@@ -127,25 +161,39 @@ async fn handle_client_websocket(
                         send_error(
                             &out_tx,
                             None,
-                            active_asr.as_ref().map(|s| s.session_id.clone()),
+                            active_session
+                                .as_ref()
+                                .map(|session| session.session_id().clone()),
                             ServerError::InvalidRequest(format!("invalid json frame: {error}")),
                         )
                         .await;
                     }
                 }
             }
-            Message::Binary(bytes) => {
-                if let Some(session) = active_asr.as_ref() {
-                    if let Err(error) = session.bridge.push_audio(bytes.to_vec()).await {
+            Message::Binary(bytes) => match active_session.as_ref() {
+                Some(ActiveSession::Asr { session_id, bridge }) => {
+                    if let Err(error) = bridge.push_audio(bytes.to_vec()).await {
                         send_error(
                             &out_tx,
                             None,
-                            Some(session.session_id.clone()),
+                            Some(session_id.clone()),
                             ServerError::Bridge(error),
                         )
                         .await;
                     }
-                } else {
+                }
+                Some(ActiveSession::Tts { session_id, .. }) => {
+                    send_error(
+                        &out_tx,
+                        None,
+                        Some(session_id.clone()),
+                        ServerError::Unsupported(
+                            "binary frames are reserved for ASR audio input".to_string(),
+                        ),
+                    )
+                    .await;
+                }
+                None => {
                     send_error(
                         &out_tx,
                         None,
@@ -154,7 +202,7 @@ async fn handle_client_websocket(
                     )
                     .await;
                 }
-            }
+            },
             Message::Close(_) => break,
             Message::Ping(payload) => {
                 let _ = out_tx
@@ -172,8 +220,8 @@ async fn handle_client_websocket(
         }
     }
 
-    if let Some(session) = active_asr.take() {
-        if let Err(error) = session.bridge.stop().await {
+    if let Some(session) = active_session.take() {
+        if let Err(error) = session.stop().await {
             warn!("failed to stop active session on disconnect: {error}");
         }
     }
@@ -219,24 +267,24 @@ async fn handle_client_message(
     message: ClientMessage,
     config: &ServerConfig,
     asr_bridge: &SharedAsrBridge,
+    tts_bridge: Option<&SharedTtsBridge>,
     out_tx: &mpsc::Sender<ServerMessage>,
-    active_asr: &mut Option<ActiveAsrSession>,
+    active_session: &mut Option<ActiveSession>,
 ) -> Result<(), ServerError> {
     match message {
         ClientMessage::Hello {
             request_id,
             payload,
         } => {
-            let hello = ServerMessage::HelloOk {
-                request_id,
-                payload: HelloResponse {
-                    protocol_version: payload.protocol_version,
-                    server_name: config.server_name.clone(),
-                    one_session_per_connection: true,
-                },
-            };
             out_tx
-                .send(hello)
+                .send(ServerMessage::HelloOk {
+                    request_id,
+                    payload: HelloResponse {
+                        protocol_version: payload.protocol_version,
+                        server_name: config.server_name.clone(),
+                        one_session_per_connection: true,
+                    },
+                })
                 .await
                 .map_err(|_| ServerError::Disconnected)?;
             Ok(())
@@ -245,7 +293,7 @@ async fn handle_client_message(
             request_id,
             payload,
         } => {
-            let discovered = handle_discover(payload, asr_bridge);
+            let discovered = handle_discover(payload, asr_bridge, tts_bridge);
             out_tx
                 .send(ServerMessage::DiscoverResult {
                     request_id,
@@ -259,7 +307,7 @@ async fn handle_client_message(
             request_id,
             payload,
         } => {
-            if active_asr.is_some() {
+            if active_session.is_some() {
                 return Err(ServerError::Unsupported(
                     "one active session per connection".to_string(),
                 ));
@@ -364,41 +412,177 @@ async fn handle_client_message(
                         provider_id: session.provider_id.clone(),
                         accepted_input_format: Some(session.accepted_input_format),
                         accepted_output_format: None,
+                        input_mode: Some(session.input_mode),
+                        output_mode: Some(session.output_mode),
                     },
                 })
                 .await
                 .map_err(|_| ServerError::Disconnected)?;
 
-            *active_asr = Some(ActiveAsrSession {
+            *active_session = Some(ActiveSession::Asr {
                 session_id: session.id,
                 bridge: bridge_session,
             });
             Ok(())
         }
         ClientMessage::AsrCommit { session_id, .. } => {
-            let session = active_asr
-                .as_ref()
-                .ok_or_else(|| ServerError::SessionNotFound("no active session".to_string()))?;
-            if session.session_id != session_id {
-                return Err(ServerError::SessionNotFound(
-                    "session id does not match active session".to_string(),
+            let session = expect_active_asr(active_session.as_ref(), &session_id)?;
+            session.commit().await?;
+            Ok(())
+        }
+        ClientMessage::TtsVoices {
+            request_id,
+            payload,
+        } => {
+            let bridge = tts_bridge.ok_or_else(|| {
+                ServerError::Unsupported("tts is not enabled in speechmeshd".to_string())
+            })?;
+            let voices = bridge.list_voices(payload).await?;
+            out_tx
+                .send(ServerMessage::TtsVoicesResult {
+                    request_id,
+                    payload: VoiceListResult { voices },
+                })
+                .await
+                .map_err(|_| ServerError::Disconnected)?;
+            Ok(())
+        }
+        ClientMessage::TtsStart {
+            request_id,
+            payload,
+        } => {
+            if active_session.is_some() {
+                return Err(ServerError::Unsupported(
+                    "one active session per connection".to_string(),
                 ));
             }
-            session.bridge.commit().await?;
+            let bridge = tts_bridge.ok_or_else(|| {
+                ServerError::Unsupported("tts is not enabled in speechmeshd".to_string())
+            })?;
+
+            let mut bridge_session = bridge.start_stream(payload).await?;
+            let session = bridge_session.session.clone();
+            let input_kind = bridge_session.input_kind;
+            let mut event_rx = bridge_session.take_event_rx().ok_or_else(|| {
+                ServerError::Bridge(BridgeError::Disconnected(
+                    "missing TTS event stream".to_string(),
+                ))
+            })?;
+
+            let event_out = out_tx.clone();
+            let session_id = session.id.clone();
+            tokio::spawn(async move {
+                let mut sequence = 0_u64;
+                let mut total_chunks = 0_u64;
+                let mut total_bytes = 0_u64;
+                while let Some(event) = event_rx.recv().await {
+                    match event {
+                        BridgeTtsEvent::Audio { chunk } => {
+                            sequence += 1;
+                            total_chunks += 1;
+                            total_bytes += chunk.bytes.len() as u64;
+                            let outgoing = ServerMessage::TtsAudioDelta {
+                                session_id: session_id.clone(),
+                                sequence,
+                                payload: TtsAudioDeltaPayload {
+                                    chunk_id: total_chunks,
+                                    audio_base64: BASE64_STANDARD.encode(chunk.bytes),
+                                    format: chunk.format,
+                                    is_final: chunk.is_final,
+                                },
+                            };
+                            if event_out.send(outgoing).await.is_err() {
+                                return;
+                            }
+                        }
+                        BridgeTtsEvent::Ended { reason } => {
+                            sequence += 1;
+                            let done = ServerMessage::TtsAudioDone {
+                                session_id: session_id.clone(),
+                                sequence,
+                                payload: TtsAudioDonePayload {
+                                    input_kind,
+                                    total_chunks,
+                                    total_bytes,
+                                },
+                            };
+                            if event_out.send(done).await.is_err() {
+                                return;
+                            }
+                            let _ = event_out
+                                .send(ServerMessage::SessionEnded {
+                                    session_id: session_id.clone(),
+                                    payload: SessionEndedPayload { reason },
+                                })
+                                .await;
+                            return;
+                        }
+                        BridgeTtsEvent::Error { message } => {
+                            if event_out
+                                .send(ServerMessage::Error {
+                                    request_id: None,
+                                    session_id: Some(session_id.clone()),
+                                    payload: ErrorPayload {
+                                        error: ErrorInfo::new("provider_error", message),
+                                    },
+                                })
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+
+            out_tx
+                .send(ServerMessage::SessionStarted {
+                    request_id: Some(request_id),
+                    session_id: session.id.clone(),
+                    payload: SessionStartedPayload {
+                        domain: CapabilityDomain::Tts,
+                        provider_id: session.provider_id.clone(),
+                        accepted_input_format: None,
+                        accepted_output_format: session.accepted_output_format.clone(),
+                        input_mode: Some(session.input_mode),
+                        output_mode: Some(session.output_mode),
+                    },
+                })
+                .await
+                .map_err(|_| ServerError::Disconnected)?;
+
+            *active_session = Some(ActiveSession::Tts {
+                session_id: session.id,
+                bridge: bridge_session,
+            });
+            Ok(())
+        }
+        ClientMessage::TtsInputAppend {
+            session_id,
+            payload,
+        } => {
+            let session = expect_active_tts(active_session.as_ref(), &session_id)?;
+            session.append_input(payload.delta).await?;
+            Ok(())
+        }
+        ClientMessage::TtsCommit { session_id, .. } => {
+            let session = expect_active_tts(active_session.as_ref(), &session_id)?;
+            session.commit().await?;
             Ok(())
         }
         ClientMessage::SessionStop { session_id, .. }
         | ClientMessage::SessionCancel { session_id, .. } => {
-            let session = active_asr
+            let current = active_session
                 .as_ref()
                 .ok_or_else(|| ServerError::SessionNotFound("no active session".to_string()))?;
-            if session.session_id != session_id {
+            if current.session_id() != &session_id {
                 return Err(ServerError::SessionNotFound(
                     "session id does not match active session".to_string(),
                 ));
             }
-            session.bridge.stop().await?;
-            *active_asr = None;
+            current.stop().await?;
+            *active_session = None;
             Ok(())
         }
         ClientMessage::Ping { request_id, .. } => {
@@ -414,27 +598,77 @@ async fn handle_client_message(
         ClientMessage::AsrTranscribe { .. } => Err(ServerError::Unsupported(
             "asr.transcribe is not implemented in speechmeshd v0".to_string(),
         )),
-        ClientMessage::TtsVoices { .. } | ClientMessage::TtsStart { .. } => Err(
-            ServerError::Unsupported("tts is not implemented in speechmeshd v0".to_string()),
-        ),
     }
 }
 
-fn handle_discover(payload: DiscoverRequest, asr_bridge: &SharedAsrBridge) -> DiscoverResult {
+fn expect_active_asr<'a>(
+    active_session: Option<&'a ActiveSession>,
+    session_id: &SessionId,
+) -> Result<&'a BridgeAsrSessionHandle, ServerError> {
+    match active_session {
+        Some(ActiveSession::Asr {
+            session_id: active_id,
+            bridge,
+        }) if active_id == session_id => Ok(bridge),
+        Some(ActiveSession::Tts { .. }) => Err(ServerError::Unsupported(
+            "the active session is a TTS session, not ASR".to_string(),
+        )),
+        Some(_) => Err(ServerError::SessionNotFound(
+            "session id does not match active session".to_string(),
+        )),
+        None => Err(ServerError::SessionNotFound(
+            "no active session".to_string(),
+        )),
+    }
+}
+
+fn expect_active_tts<'a>(
+    active_session: Option<&'a ActiveSession>,
+    session_id: &SessionId,
+) -> Result<&'a BridgeTtsSessionHandle, ServerError> {
+    match active_session {
+        Some(ActiveSession::Tts {
+            session_id: active_id,
+            bridge,
+        }) if active_id == session_id => Ok(bridge),
+        Some(ActiveSession::Asr { .. }) => Err(ServerError::Unsupported(
+            "the active session is an ASR session, not TTS".to_string(),
+        )),
+        Some(_) => Err(ServerError::SessionNotFound(
+            "session id does not match active session".to_string(),
+        )),
+        None => Err(ServerError::SessionNotFound(
+            "no active session".to_string(),
+        )),
+    }
+}
+
+fn handle_discover(
+    payload: DiscoverRequest,
+    asr_bridge: &SharedAsrBridge,
+    tts_bridge: Option<&SharedTtsBridge>,
+) -> DiscoverResult {
     let requested_domains = payload.domains;
     let want_asr = requested_domains.is_empty()
         || requested_domains
             .iter()
             .any(|domain| matches!(domain, CapabilityDomain::Asr));
-    if !want_asr {
-        return DiscoverResult {
-            providers: Vec::new(),
-        };
+    let want_tts = requested_domains.is_empty()
+        || requested_domains
+            .iter()
+            .any(|domain| matches!(domain, CapabilityDomain::Tts));
+
+    let mut providers = Vec::new();
+    if want_asr {
+        providers.extend(asr_bridge.descriptors());
+    }
+    if want_tts {
+        if let Some(bridge) = tts_bridge {
+            providers.extend(bridge.descriptors());
+        }
     }
 
-    DiscoverResult {
-        providers: asr_bridge.descriptors(),
-    }
+    DiscoverResult { providers }
 }
 
 async fn send_error(
@@ -503,33 +737,51 @@ pub fn parse_transport_kind(value: &str) -> Option<TransportKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use speechmesh_core::ProviderSelector;
 
     #[test]
-    fn discover_filters_non_asr_domains() {
-        let bridge: crate::bridge::SharedAsrBridge =
-            std::sync::Arc::new(crate::bridge::MockAsrBridge::new("mock.asr"));
+    fn discover_filters_non_registered_domains() {
+        let asr_bridge: crate::asr_bridge::SharedAsrBridge =
+            std::sync::Arc::new(crate::asr_bridge::MockAsrBridge::new("mock.asr"));
         let result = handle_discover(
             DiscoverRequest {
-                domains: vec![CapabilityDomain::Tts],
+                domains: vec![CapabilityDomain::Transport],
             },
-            &bridge,
+            &asr_bridge,
+            None,
         );
         assert!(result.providers.is_empty());
     }
 
     #[test]
     fn discover_returns_asr_provider_when_requested() {
-        let bridge: crate::bridge::SharedAsrBridge =
-            std::sync::Arc::new(crate::bridge::MockAsrBridge::new("mock.asr"));
+        let asr_bridge: crate::asr_bridge::SharedAsrBridge =
+            std::sync::Arc::new(crate::asr_bridge::MockAsrBridge::new("mock.asr"));
         let result = handle_discover(
             DiscoverRequest {
                 domains: vec![CapabilityDomain::Asr],
             },
-            &bridge,
+            &asr_bridge,
+            None,
         );
         assert_eq!(result.providers.len(), 1);
         assert_eq!(result.providers[0].id, "mock.asr");
+    }
+
+    #[test]
+    fn discover_returns_tts_provider_when_requested() {
+        let asr_bridge: crate::asr_bridge::SharedAsrBridge =
+            std::sync::Arc::new(crate::asr_bridge::MockAsrBridge::new("mock.asr"));
+        let tts_bridge: crate::tts_bridge::SharedTtsBridge =
+            std::sync::Arc::new(crate::tts_bridge::MockTtsBridge::new("mock.tts"));
+        let result = handle_discover(
+            DiscoverRequest {
+                domains: vec![CapabilityDomain::Tts],
+            },
+            &asr_bridge,
+            Some(&tts_bridge),
+        );
+        assert_eq!(result.providers.len(), 1);
+        assert_eq!(result.providers[0].id, "mock.tts");
     }
 
     #[test]
@@ -541,12 +793,6 @@ mod tests {
         );
         assert_eq!(parse_transport_kind("http"), Some(TransportKind::Http));
         assert!(parse_transport_kind("grpc").is_none());
-    }
-
-    #[test]
-    fn provider_selector_is_compatible_with_discover_and_start_paths() {
-        let selector = ProviderSelector::default();
-        assert!(selector.provider_id.is_none());
     }
 
     #[test]

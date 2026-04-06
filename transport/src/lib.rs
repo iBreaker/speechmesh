@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use speechmesh_asr::{StreamRequest, TranscribeRequest};
 use speechmesh_core::{
     AudioFormat, CapabilityDomain, ErrorInfo, ProviderDescriptor, ProviderSelector, RequestId,
-    SessionId,
+    SessionId, StreamMode,
 };
-use speechmesh_tts::{SynthesisRequest, VoiceDescriptor};
+use speechmesh_tts::{StreamRequest as TtsStreamRequest, SynthesisInputKind, VoiceDescriptor};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +47,8 @@ pub struct SessionStartedPayload {
     pub provider_id: String,
     pub accepted_input_format: Option<AudioFormat>,
     pub accepted_output_format: Option<AudioFormat>,
+    pub input_mode: Option<StreamMode>,
+    pub output_mode: Option<StreamMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +81,26 @@ pub struct VoiceListRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VoiceListResult {
     pub voices: Vec<VoiceDescriptor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TtsInputAppendPayload {
+    pub delta: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TtsAudioDeltaPayload {
+    pub chunk_id: u64,
+    pub audio_base64: String,
+    pub is_final: bool,
+    pub format: Option<AudioFormat>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TtsAudioDonePayload {
+    pub input_kind: SynthesisInputKind,
+    pub total_chunks: u64,
+    pub total_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,7 +149,17 @@ pub enum ClientMessage {
     #[serde(rename = "tts.start")]
     TtsStart {
         request_id: RequestId,
-        payload: SynthesisRequest,
+        payload: TtsStreamRequest,
+    },
+    #[serde(rename = "tts.input.append")]
+    TtsInputAppend {
+        session_id: SessionId,
+        payload: TtsInputAppendPayload,
+    },
+    #[serde(rename = "tts.commit")]
+    TtsCommit {
+        session_id: SessionId,
+        payload: EmptyPayload,
     },
     #[serde(rename = "session.stop")]
     SessionStop {
@@ -175,6 +207,18 @@ pub enum ServerMessage {
     TtsVoicesResult {
         request_id: RequestId,
         payload: VoiceListResult,
+    },
+    #[serde(rename = "tts.audio.delta")]
+    TtsAudioDelta {
+        session_id: SessionId,
+        sequence: u64,
+        payload: TtsAudioDeltaPayload,
+    },
+    #[serde(rename = "tts.audio.done")]
+    TtsAudioDone {
+        session_id: SessionId,
+        sequence: u64,
+        payload: TtsAudioDonePayload,
     },
     #[serde(rename = "session.ended")]
     SessionEnded {
@@ -229,5 +273,22 @@ mod tests {
 
         assert!(encoded.contains("\"type\":\"ping\""));
         assert!(encoded.contains("\"request_id\":\"req_1\""));
+    }
+
+    #[test]
+    fn tts_audio_done_uses_explicit_type_tag() {
+        let message = ServerMessage::TtsAudioDone {
+            session_id: SessionId::new(),
+            sequence: 1,
+            payload: TtsAudioDonePayload {
+                input_kind: SynthesisInputKind::Text,
+                total_chunks: 1,
+                total_bytes: 128,
+            },
+        };
+        let encoded = serde_json::to_string(&message).expect("serialize tts audio done");
+
+        assert!(encoded.contains("\"type\":\"tts.audio.done\""));
+        assert!(encoded.contains("\"total_bytes\":128"));
     }
 }

@@ -15,12 +15,14 @@ serde_json.workspace = true
 speechmesh-asr = { path = "../asr" }
 speechmesh-core = { path = "../core" }
 speechmesh-transport = { path = "../transport" }
+speechmesh-tts = { path = "../tts" }
 thiserror.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 rustls.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

@@ -14,6 +14,7 @@ This document focuses on `/ws`, which is the stable public contract for SDKs and
 - one WebSocket connection supports at most one active speech session
 - JSON text frames carry control-plane messages
 - binary frames carry raw audio bytes for the active ASR session
+- TTS audio currently returns as Base64 payloads inside JSON text events
 - message types are tagged through the top-level `type` field
 - request/response exchanges use `request_id` when applicable
 - session-scoped events use `session_id`
@@ -32,6 +33,20 @@ A typical client connection looks like this:
 8. client sends `asr.commit`
 9. server emits `asr.result` revisions
 10. server emits `session.ended`
+
+A typical TTS connection looks like this:
+
+1. client connects to `/ws`
+2. client sends `hello`
+3. client optionally sends `discover`
+4. client sends `tts.voices`
+5. client sends `tts.start`
+6. server replies with `session.started`
+7. client sends one or more `tts.input.append` messages
+8. client sends `tts.commit`
+9. server emits one or more `tts.audio.delta` events
+10. server emits `tts.audio.done`
+11. server emits `session.ended`
 
 ## Client Messages
 
@@ -122,6 +137,81 @@ Stops the active session early.
 }
 ```
 
+### `tts.voices`
+
+Lists available voices for a concrete provider or provider selector.
+
+```json
+{
+  "type": "tts.voices",
+  "request_id": "req_voices",
+  "payload": {
+    "provider": {
+      "mode": "provider",
+      "provider_id": "melo.tts",
+      "required_capabilities": [],
+      "preferred_capabilities": []
+    },
+    "language": null
+  }
+}
+```
+
+### `tts.start`
+
+Starts a TTS session but does not yet send text.
+
+```json
+{
+  "type": "tts.start",
+  "request_id": "req_tts_start",
+  "payload": {
+    "provider": {
+      "mode": "provider",
+      "provider_id": "melo.tts",
+      "required_capabilities": [],
+      "preferred_capabilities": []
+    },
+    "input_kind": "text",
+    "output_format": null,
+    "options": {
+      "language": null,
+      "voice": null,
+      "stream": true,
+      "rate": 1.0,
+      "pitch": null,
+      "volume": null
+    }
+  }
+}
+```
+
+### `tts.input.append`
+
+Appends text into the current TTS input buffer.
+
+```json
+{
+  "type": "tts.input.append",
+  "session_id": "sess_tts_123",
+  "payload": {
+    "delta": "Hello from SpeechMesh."
+  }
+}
+```
+
+### `tts.commit`
+
+Signals that the current buffered text is ready for synthesis.
+
+```json
+{
+  "type": "tts.commit",
+  "session_id": "sess_tts_123",
+  "payload": {}
+}
+```
+
 ### `ping`
 
 Optional liveness probe.
@@ -191,6 +281,26 @@ Optional liveness probe.
 }
 ```
 
+### `tts.voices.result`
+
+```json
+{
+  "type": "tts.voices.result",
+  "request_id": "req_voices",
+  "payload": {
+    "voices": [
+      {
+        "id": "ZH",
+        "language": "ZH",
+        "display_name": "MeloTTS ZH",
+        "gender": null,
+        "capabilities": ["rate-control", "wav-output"]
+      }
+    ]
+  }
+}
+```
+
 ### `asr.result`
 
 `asr.result` is a revision-based snapshot.
@@ -235,6 +345,43 @@ A final result looks like:
 }
 ```
 
+### `tts.audio.delta`
+
+SpeechMesh streams TTS output as ordered chunk events.
+
+```json
+{
+  "type": "tts.audio.delta",
+  "session_id": "sess_tts_123",
+  "sequence": 1,
+  "payload": {
+    "chunk_id": 1,
+    "audio_base64": "<base64>",
+    "format": {
+      "encoding": "wav",
+      "sample_rate_hz": 44100,
+      "channels": 1
+    },
+    "is_final": false
+  }
+}
+```
+
+### `tts.audio.done`
+
+```json
+{
+  "type": "tts.audio.done",
+  "session_id": "sess_tts_123",
+  "sequence": 9,
+  "payload": {
+    "input_kind": "text",
+    "total_chunks": 9,
+    "total_bytes": 323112
+  }
+}
+```
+
 ## Delta Semantics
 
 ASR decoders often revise earlier words after later context arrives.
@@ -263,6 +410,8 @@ The server ends an ASR session with `session.ended`.
 ```
 
 Stop reading only after you have processed the terminal `asr.result` and the session has ended.
+
+For TTS, stop reading only after you have processed both `tts.audio.done` and `session.ended`.
 
 ## Error Model
 

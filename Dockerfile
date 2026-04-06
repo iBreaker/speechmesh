@@ -7,6 +7,7 @@ COPY asr ./asr
 COPY tts ./tts
 COPY transport ./transport
 COPY speechmeshd ./speechmeshd
+COPY sdks/rust ./sdks/rust
 
 RUN cargo build --locked -p speechmeshd --release --bin speechmeshd
 

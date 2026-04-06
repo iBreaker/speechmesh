@@ -26,6 +26,7 @@ Today the active production topology is:
 - `speechmeshd` as the WebSocket gateway and session coordinator
 - `apple_agent` as the lightweight macOS-side connector
 - `apple-asr-bridge` as the platform-specific Apple Speech execution process
+- optional local or remote TTS engines behind the same WebSocket gateway
 - first-party Go and Rust SDKs as the canonical client surface
 
 This lets the heavy, scalable control plane live in Linux or Kubernetes while keeping Apple-native recognition on a macOS host.
@@ -54,7 +55,12 @@ Speech-to-text contracts and provider-facing types:
 
 ### `tts`
 
-Text-to-speech contracts and provider-facing types. This exists as a domain boundary today, even though the current shipped transport path is ASR-focused.
+Text-to-speech contracts and provider-facing types:
+
+- streaming session request model
+- append/commit text input lifecycle
+- voice descriptors
+- streamed audio chunk events
 
 ### `transport`
 
@@ -74,6 +80,12 @@ Runtime gateway binaries:
 - `speechmeshd` - WebSocket gateway
 - `apple_agent` - agent that connects macOS execution to the gateway
 - `bridge_tcpd` - TCP adapter for line-based external bridges
+
+Inside the gateway runtime, the capability handlers are now split symmetrically:
+
+- `speechmeshd/src/asr_bridge.rs` for ASR bridge backends
+- `speechmeshd/src/tts_bridge.rs` for TTS bridge backends
+- `speechmeshd/src/bridge_support.rs` for shared bridge error types
 
 ### `sdks`
 
@@ -113,6 +125,18 @@ A client session follows this flow:
 6. send `asr.commit`
 7. receive zero or more `asr.result` revisions
 8. stop when `is_final=true` and `speech_final=true`
+9. receive `session.ended`
+
+A TTS session follows the same top-level connection rules:
+
+1. open a WebSocket connection to `/ws`
+2. send `hello`
+3. optionally send `discover` and `tts.voices`
+4. send `tts.start`
+5. send one or more `tts.input.append` messages
+6. send `tts.commit`
+7. receive ordered `tts.audio.delta` chunks
+8. receive `tts.audio.done`
 9. receive `session.ended`
 
 In `agent` mode, the internal flow continues:
@@ -177,6 +201,7 @@ Client-side OAuth or multi-tenant auth is not built into the gateway yet; that s
 ## Current Constraints
 
 - one active session per client WebSocket connection
-- ASR is the primary shipped transport path today
+- ASR is the most mature shipped transport path today
+- TTS is currently implemented through a generic WebSocket lifecycle with MeloTTS as the first concrete provider
 - Apple Speech execution requires macOS and cannot be containerized into the Linux gateway image
 - the gateway is intentionally stateless and does not persist audio or transcripts

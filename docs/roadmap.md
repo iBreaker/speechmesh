@@ -8,6 +8,8 @@ Completed or already working in the repository:
 - WebSocket v1 transport contract
 - `speechmeshd` gateway runtime
 - mock, stdio, tcp, and agent ASR bridge modes
+- generic WebSocket TTS session lifecycle
+- first MeloTTS-backed TTS provider path
 - split deployment for Linux gateway + macOS Apple Speech execution
 - first-party Rust and Go client SDKs
 - end-to-end validation clients and helper scripts

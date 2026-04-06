@@ -7,23 +7,30 @@ It starts with two capability domains:
 - ASR: speech-to-text
 - TTS: text-to-speech
 
-The current production path is ASR-first and WebSocket-first:
+The current production path is WebSocket-first:
 
 - `speechmeshd` is the Rust gateway/runtime daemon
 - `/ws` is the client-facing WebSocket endpoint
 - `/agent` is the macOS agent endpoint for Apple-backed providers
 - Apple Speech stays on macOS while the heavier gateway path runs in Linux or Kubernetes
+- local or remote TTS engines can sit behind the same gateway contract
 - first-party Rust and Go SDKs provide a stable client entry point for remote devices
+
+The gateway can now also expose multiple explicitly installed ASR providers behind the same `/ws` endpoint.
 
 ## Status
 
-SpeechMesh is pre-1.0 and still evolving, but the current ASR path is already usable for real deployments.
+SpeechMesh is pre-1.0 and still evolving, but the current ASR and initial TTS paths are already usable for real deployments.
 
 Today the repository includes:
 
 - streaming ASR over WebSocket
+- WebSocket TTS sessions with append/commit audio streaming semantics
 - a split deployment model for Linux gateway + macOS Apple Speech execution
+- explicit provider catalogs and installed-provider state for ASR routing
+- a first local TTS provider integration through MeloTTS
 - Rust and Go client SDKs
+- first-party Rust and Go SDK helpers for both ASR and TTS session flows
 - local mock bridge mode for development and protocol testing
 - Kubernetes and macOS service assets for the current production shape
 
@@ -98,6 +105,58 @@ scripts/run_ws_asr_e2e.sh ws://127.0.0.1:8765/ws "speech mesh"
 
 `run_ws_asr_e2e.sh` and `run_go_sdk_e2e.sh` synthesize test audio through `say`, so they are macOS-oriented helpers. On Linux, generate a compatible WAV file manually and run the example binaries directly.
 
+### 3.5 Drive a local end-to-end TTS session through MeloTTS
+
+If your local MeloTTS server is already running on `http://127.0.0.1:7797`, start the gateway with both ASR and TTS enabled:
+
+```bash
+cargo run -p speechmeshd --bin speechmeshd -- \
+  --listen 127.0.0.1:8765 \
+  --server-name speechmesh-dev \
+  --asr-bridge-mode mock \
+  --asr-provider-id mock.asr \
+  --tts-bridge-mode melo-http \
+  --tts-provider-id melo.tts \
+  --tts-provider-name MeloTTS \
+  --tts-melo-base-url http://127.0.0.1:7797
+```
+
+Then validate TTS over WebSocket:
+
+```bash
+scripts/run_ws_tts_e2e.sh \
+  ws://127.0.0.1:8765/ws \
+  "你好，这是 SpeechMesh 的 MeloTTS 集成测试。" \
+  /tmp/speechmesh-tts.wav \
+  melo.tts
+```
+
+### 4. Install providers explicitly, then start a multi-provider gateway
+
+Supported providers live in a catalog. A provider only becomes discoverable after you install it into gateway state.
+
+```bash
+cargo run -p speechmeshd --bin speechmeshd -- providers install apple.asr \
+  --catalog deploy/providers.catalog.example.json \
+  --state /tmp/speechmesh.providers.json
+```
+
+Then point the gateway at the installed-provider state:
+
+```bash
+cargo run -p speechmeshd --bin speechmeshd -- \
+  --listen 127.0.0.1:8765 \
+  --server-name speechmesh-dev \
+  --asr-providers-state /tmp/speechmesh.providers.json
+```
+
+The install boundary now works like this:
+
+- if a provider is not present in the state file, it is treated as not installed
+- only installed and enabled providers are returned by `discover`
+- supported providers can exist in the catalog without being exposed on this gateway
+- routed providers can still fail at session start if their bridge or agent is temporarily unavailable
+
 ## Production Split Deployment
 
 Apple `Speech.framework` cannot run inside a Linux container. The supported production topology is:
@@ -131,6 +190,7 @@ Typical flow:
 SpeechMesh v1 is a WebSocket-first streaming protocol.
 
 - JSON text frames carry control messages such as `hello`, `discover`, `asr.start`, `asr.commit`, and `session.stop`
+- TTS uses JSON text frames end-to-end, including `tts.start`, `tts.input.append`, `tts.commit`, `tts.audio.delta`, and `tts.audio.done`
 - binary frames carry raw audio bytes for the active ASR session
 - each connection supports at most one active session at a time
 - `asr.result` events are revision-based snapshots, not append-only token streams
@@ -147,6 +207,7 @@ Examples:
 
 - Rust SDK E2E client: `examples/ws-asr-e2e`
 - Go SDK E2E client: `sdks/go/examples/stream_asr`
+- TTS protocol smoke test: `scripts/run_ws_tts_e2e.sh`
 
 ## Repository Map
 
@@ -172,10 +233,13 @@ Start here:
 - `docs/architecture.md`
 - `docs/websocket-protocol.md`
 - `docs/deployment.md`
+- `docs/providers.md`
+- `docs/tts-websocket-design.md`
 - `docs/sdk-guide.md`
 - `docs/testing.md`
 - `docs/compatibility.md`
 - `docs/roadmap.md`
+- `docs/tts-landscape.md`
 
 Component-level references:
 

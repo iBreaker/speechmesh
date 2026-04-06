@@ -766,6 +766,7 @@ dependencies = [
  "speechmesh-asr",
  "speechmesh-core",
  "speechmesh-transport",
+ "speechmesh-tts",
  "thiserror",
  "tokio",
  "tokio-tungstenite",

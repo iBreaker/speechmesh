@@ -7,6 +7,8 @@
 - synthesis request contracts
 - voice and output descriptors
 - provider-facing option types
-- future transport-backed TTS runtime behavior
+- transport-backed TTS runtime behavior
 
-The transport-backed implementation path is still earlier than ASR, but the capability boundary is already established.
+The transport-backed implementation path now exists through the generic WebSocket lifecycle in `speechmeshd`, with MeloTTS as the first concrete provider.
+
+For current provider research, see `docs/tts-landscape.md`.

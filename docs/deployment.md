@@ -4,6 +4,9 @@ SpeechMesh supports multiple deployment shapes, but the current production-grade
 
 - Linux or Kubernetes for the gateway and public ingress
 - macOS for Apple-native speech execution
+- optional local or remote TTS engines behind the same gateway
+
+Before a provider becomes discoverable on a gateway, it should be installed into provider state explicitly. That keeps supported providers separate from actually exposed providers.
 
 ## Deployment Modes
 
@@ -62,6 +65,49 @@ cargo run -p speechmeshd --bin speechmeshd -- \
   --agent-shared-secret change-me
 ```
 
+### Installed Provider State
+
+The gateway can also load an installed-provider state file directly.
+
+```bash
+cargo run -p speechmeshd --bin speechmeshd -- \
+  --listen 0.0.0.0:8765 \
+  --server-name speechmesh-gateway \
+  --asr-providers-state /etc/speechmesh/providers.state.json
+```
+
+Populate that state explicitly:
+
+```bash
+cargo run -p speechmeshd --bin speechmeshd -- providers install apple.asr \
+  --catalog deploy/providers.catalog.example.json \
+  --state /etc/speechmesh/providers.state.json
+```
+
+### Local MeloTTS Sidecar Or Host Service
+
+The first concrete TTS provider path is a MeloTTS HTTP service plus `speechmeshd` in `melo-http` mode.
+
+Example gateway process:
+
+```bash
+cargo run -p speechmeshd --bin speechmeshd -- \
+  --listen 127.0.0.1:8765 \
+  --server-name speechmesh-dev \
+  --asr-bridge-mode mock \
+  --asr-provider-id mock.asr \
+  --tts-bridge-mode melo-http \
+  --tts-provider-id melo.tts \
+  --tts-provider-name MeloTTS \
+  --tts-melo-base-url http://127.0.0.1:7797
+```
+
+In this shape:
+
+- `speechmeshd` owns the public WebSocket contract
+- the MeloTTS service stays behind HTTP
+- SpeechMesh normalizes it into `tts.start` / `tts.input.append` / `tts.commit` / `tts.audio.delta`
+
 ## Production Split: Linux Gateway + macOS Agent
 
 ### Kubernetes Gateway
@@ -96,6 +142,7 @@ The repository includes:
 
 - LaunchAgent plist template: `deploy/macos/io.speechmesh.apple-agent.plist`
 - installer helper: `scripts/install_apple_agent_service.sh`
+- provider catalog example: `deploy/providers.catalog.example.json`
 
 Example:
 
@@ -153,5 +200,11 @@ What SpeechMesh does not yet provide natively:
 - end-user OAuth on the `/ws` endpoint
 - role-based access control inside the gateway
 - multi-tenant provider isolation
+
+What the provider lifecycle layer does not yet automate:
+
+- model downloads for third-party ASR providers
+- bridge rollout orchestration
+- in-place hot reload of provider state in a running gateway
 
 If you need those today, put an auth proxy or ingress policy in front of the gateway.

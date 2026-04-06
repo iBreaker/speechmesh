@@ -1,0 +1,52 @@
+{
+  "format": "speechmesh/asr-provider-catalog.v1",
+  "providers": [
+    {
+      "provider_id": "apple.asr",
+      "display_name": "Apple Speech",
+      "description": "Apple Speech routed through a lightweight macOS agent.",
+      "enabled_by_default": true,
+      "install": {
+        "download_required": false,
+        "notes": [
+          "Install the provider explicitly so it becomes discoverable on the gateway.",
+          "A connected apple_agent is still required before traffic can flow."
+        ]
+      },
+      "bridge_mode": "agent",
+      "start_timeout_secs": 10
+    },
+    {
+      "provider_id": "sensevoice.asr",
+      "display_name": "SenseVoice",
+      "description": "SenseVoice behind a remote bridge or model-serving sidecar.",
+      "enabled_by_default": true,
+      "install": {
+        "download_required": true,
+        "artifact_hint": "/srv/speechmesh/providers/sensevoice",
+        "notes": [
+          "Download model artifacts during the install workflow instead of at gateway boot.",
+          "Start the provider bridge separately and point the gateway at it through TCP."
+        ]
+      },
+      "bridge_mode": "tcp",
+      "address": "127.0.0.1:9901"
+    },
+    {
+      "provider_id": "paraformer.asr",
+      "display_name": "Paraformer Streaming",
+      "description": "Paraformer streaming ASR reachable over the bridge TCP protocol.",
+      "enabled_by_default": true,
+      "install": {
+        "download_required": true,
+        "artifact_hint": "/srv/speechmesh/providers/paraformer",
+        "notes": [
+          "Install does not auto-start the provider service.",
+          "Provision weights and bring up the bridge before sending traffic."
+        ]
+      },
+      "bridge_mode": "tcp",
+      "address": "127.0.0.1:9902"
+    }
+  ]
+}

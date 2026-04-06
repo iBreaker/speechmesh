@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use speechmesh_core::{
-    AudioFormat, EventEnvelope, ProviderDescriptor, ProviderSelector, SessionId,
+    AudioFormat, EventEnvelope, ProviderDescriptor, ProviderSelector, SessionId, StreamMode,
 };
 use thiserror::Error;
 
@@ -11,6 +11,13 @@ use thiserror::Error;
 pub enum SynthesisInput {
     Text(String),
     Ssml(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SynthesisInputKind {
+    Text,
+    Ssml,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -29,6 +36,14 @@ pub struct SynthesisOptions {
 pub struct SynthesisRequest {
     pub provider: ProviderSelector,
     pub input: SynthesisInput,
+    pub output_format: Option<AudioFormat>,
+    pub options: SynthesisOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StreamRequest {
+    pub provider: ProviderSelector,
+    pub input_kind: SynthesisInputKind,
     pub output_format: Option<AudioFormat>,
     pub options: SynthesisOptions,
 }
@@ -55,6 +70,8 @@ pub struct TtsSession {
     pub id: SessionId,
     pub provider_id: String,
     pub accepted_output_format: Option<AudioFormat>,
+    pub input_mode: StreamMode,
+    pub output_mode: StreamMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -11,10 +11,12 @@ serde_json.workspace = true
 speechmesh-asr = { path = "../../asr" }
 speechmesh-core = { path = "../../core" }
 speechmesh-transport = { path = "../../transport" }
+speechmesh-tts = { path = "../../tts" }
 thiserror.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 speechmeshd = { path = "../../speechmeshd" }
 tokio = { workspace = true, features = ["test-util"] }

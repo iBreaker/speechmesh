@@ -10,7 +10,7 @@ This document describes the validation matrix for SpeechMesh.
 cargo test
 ```
 
-Covers shared contracts, gateway behavior, and the Rust SDK integration test.
+Covers shared contracts, gateway behavior, and the Rust SDK integration tests for both ASR and TTS.
 
 ### Rust SDK only
 
@@ -23,6 +23,8 @@ cargo test -p speechmesh-sdk
 ```bash
 cd sdks/go && go test ./...
 ```
+
+Covers Go SDK ASR and TTS session helpers against mock WebSocket servers.
 
 ## Local End-to-End Validation
 
@@ -53,6 +55,58 @@ go run ./examples/stream_asr \
   --wav /path/to/audio.wav \
   --expected "speech mesh"
 ```
+
+### Installed-provider lifecycle smoke
+
+You can also validate the explicit install boundary:
+
+```bash
+rm -f /tmp/speechmesh.providers.json
+cargo run -p speechmeshd --bin speechmeshd -- providers install apple.asr \
+  --catalog deploy/providers.catalog.example.json \
+  --state /tmp/speechmesh.providers.json
+
+cargo run -p speechmeshd --bin speechmeshd -- \
+  --listen 127.0.0.1:8765 \
+  --server-name speechmesh-dev \
+  --asr-providers-state /tmp/speechmesh.providers.json
+```
+
+Expected behavior:
+
+- `discover` only returns providers that are present and enabled in the state file
+- catalog-only providers remain invisible until installed
+- bridge metadata still comes from the installed state, not from hard-coded defaults
+
+### MeloTTS WebSocket end-to-end
+
+If the local MeloTTS helper server is running on `http://127.0.0.1:7797`, validate the generic TTS WebSocket path:
+
+```bash
+cargo run -p speechmeshd --bin speechmeshd -- \
+  --listen 127.0.0.1:8765 \
+  --server-name speechmesh-dev \
+  --asr-bridge-mode mock \
+  --asr-provider-id mock.asr \
+  --tts-bridge-mode melo-http \
+  --tts-provider-id melo.tts \
+  --tts-provider-name MeloTTS \
+  --tts-melo-base-url http://127.0.0.1:7797
+
+scripts/run_ws_tts_e2e.sh \
+  ws://127.0.0.1:8765/ws \
+  "你好，这是 SpeechMesh 的 MeloTTS 集成测试。" \
+  /tmp/speechmesh-tts.wav \
+  melo.tts
+```
+
+Expected behavior:
+
+- `tts.voices` succeeds for `melo.tts`
+- `session.started` reports `domain=tts`
+- multiple `tts.audio.delta` events may be emitted for one synthesis
+- `tts.audio.done` arrives before `session.ended`
+- the output WAV is non-empty and playable
 
 ## Live Split-Deployment Validation
 

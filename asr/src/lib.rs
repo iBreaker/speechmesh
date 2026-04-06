@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use speechmesh_core::{
-    AudioFormat, EventEnvelope, ProviderDescriptor, ProviderSelector, SessionId,
+    AudioFormat, EventEnvelope, ProviderDescriptor, ProviderSelector, SessionId, StreamMode,
 };
 use std::path::PathBuf;
 use thiserror::Error;
@@ -61,6 +61,8 @@ pub struct AsrSession {
     pub id: SessionId,
     pub provider_id: String,
     pub accepted_input_format: AudioFormat,
+    pub input_mode: StreamMode,
+    pub output_mode: StreamMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

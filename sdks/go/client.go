@@ -26,10 +26,11 @@ func (c ClientConfig) withDefaults() ClientConfig {
 }
 
 type Client struct {
-	config          ClientConfig
-	conn            *websocket.Conn
-	nextRequestID   uint64
-	activeSessionID string
+	config              ClientConfig
+	conn                *websocket.Conn
+	nextRequestID       uint64
+	activeSessionID     string
+	activeSessionDomain CapabilityDomain
 }
 
 type ServerError struct {
@@ -64,6 +65,10 @@ func (c *Client) ActiveSessionID() string {
 	return c.activeSessionID
 }
 
+func (c *Client) ActiveSessionDomain() CapabilityDomain {
+	return c.activeSessionDomain
+}
+
 func (c *Client) Discover(ctx context.Context, domains []CapabilityDomain) (*DiscoverResult, error) {
 	requestID := c.nextID()
 	if err := c.sendJSON(ctx, map[string]any{
@@ -95,18 +100,23 @@ func (c *Client) DiscoverASR(ctx context.Context) (*DiscoverResult, error) {
 	return c.Discover(ctx, []CapabilityDomain{CapabilityDomainASR})
 }
 
-func (c *Client) StartASR(ctx context.Context, request StreamRequest) (string, *SessionStartedPayload, error) {
+func (c *Client) DiscoverTTS(ctx context.Context) (*DiscoverResult, error) {
+	return c.Discover(ctx, []CapabilityDomain{CapabilityDomainTTS})
+}
+
+func (c *Client) startSession(ctx context.Context, messageType string, request any) (string, *SessionStartedPayload, error) {
 	if c.activeSessionID != "" {
 		return "", nil, fmt.Errorf("speechmesh server allows only one active session per connection")
 	}
 	requestID := c.nextID()
 	if err := c.sendJSON(ctx, map[string]any{
-		"type":       "asr.start",
+		"type":       messageType,
 		"request_id": requestID,
 		"payload":    request,
 	}); err != nil {
 		return "", nil, err
 	}
+
 	for {
 		event, err := c.Recv(ctx)
 		if err != nil {
@@ -116,6 +126,9 @@ func (c *Client) StartASR(ctx context.Context, request StreamRequest) (string, *
 		case EventTypeSessionStarted:
 			if event.RequestID != nil && *event.RequestID == requestID && event.SessionID != nil {
 				c.activeSessionID = *event.SessionID
+				if event.SessionStarted != nil {
+					c.activeSessionDomain = event.SessionStarted.Domain
+				}
 				return *event.SessionID, event.SessionStarted, nil
 			}
 		case EventTypeError:
@@ -126,19 +139,90 @@ func (c *Client) StartASR(ctx context.Context, request StreamRequest) (string, *
 	}
 }
 
-func (c *Client) SendAudio(ctx context.Context, chunk []byte) error {
+func (c *Client) StartASR(ctx context.Context, request StreamRequest) (string, *SessionStartedPayload, error) {
+	return c.startSession(ctx, "asr.start", request)
+}
+
+func (c *Client) StartTTS(ctx context.Context, request TtsStreamRequest) (string, *SessionStartedPayload, error) {
+	return c.startSession(ctx, "tts.start", request)
+}
+
+func (c *Client) ensureActiveSession(domain CapabilityDomain) error {
 	if c.activeSessionID == "" {
 		return fmt.Errorf("no active session")
+	}
+	if domain != "" && c.activeSessionDomain != "" && domain != c.activeSessionDomain {
+		return fmt.Errorf("active session domain %s does not match expected %s", c.activeSessionDomain, domain)
+	}
+	return nil
+}
+
+func (c *Client) TtsListVoices(ctx context.Context, request VoiceListRequest) (*VoiceListResult, error) {
+	requestID := c.nextID()
+	if err := c.sendJSON(ctx, map[string]any{
+		"type":       "tts.voices",
+		"request_id": requestID,
+		"payload":    request,
+	}); err != nil {
+		return nil, err
+	}
+	for {
+		event, err := c.Recv(ctx)
+		if err != nil {
+			return nil, err
+		}
+		switch event.Type {
+		case EventTypeTtsVoicesResult:
+			if event.RequestID != nil && *event.RequestID == requestID {
+				return event.TtsVoicesResult, nil
+			}
+		case EventTypeError:
+			if event.RequestID != nil && *event.RequestID == requestID {
+				return nil, &ServerError{RequestID: event.RequestID, SessionID: event.SessionID, Info: event.Error.Error}
+			}
+		}
+	}
+}
+
+func (c *Client) TtsAppendInput(ctx context.Context, delta string) error {
+	if err := c.ensureActiveSession(CapabilityDomainTTS); err != nil {
+		return err
+	}
+	return c.sendJSON(ctx, map[string]any{
+		"type":       "tts.input.append",
+		"session_id": c.activeSessionID,
+		"payload":    TtsInputAppendPayload{Delta: delta},
+	})
+}
+
+func (c *Client) TtsCommit(ctx context.Context) error {
+	if err := c.ensureActiveSession(CapabilityDomainTTS); err != nil {
+		return err
+	}
+	return c.sendJSON(ctx, map[string]any{
+		"type":       "tts.commit",
+		"session_id": c.activeSessionID,
+		"payload":    map[string]any{},
+	})
+}
+
+func (c *Client) SendAudio(ctx context.Context, chunk []byte) error {
+	if err := c.ensureActiveSession(CapabilityDomainASR); err != nil {
+		return err
 	}
 	return c.conn.Write(ctx, websocket.MessageBinary, chunk)
 }
 
 func (c *Client) Commit(ctx context.Context) error {
-	if c.activeSessionID == "" {
-		return fmt.Errorf("no active session")
+	if err := c.ensureActiveSession(""); err != nil {
+		return err
+	}
+	messageType := "asr.commit"
+	if c.activeSessionDomain == CapabilityDomainTTS {
+		messageType = "tts.commit"
 	}
 	return c.sendJSON(ctx, map[string]any{
-		"type":       "asr.commit",
+		"type":       messageType,
 		"session_id": c.activeSessionID,
 		"payload":    map[string]any{},
 	})
@@ -204,6 +288,9 @@ func (c *Client) Recv(ctx context.Context) (*Event, error) {
 		event.SessionStarted = &payload
 		if event.SessionID != nil {
 			c.activeSessionID = *event.SessionID
+			if event.SessionStarted != nil {
+				c.activeSessionDomain = event.SessionStarted.Domain
+			}
 		}
 	case EventTypeASRResult:
 		var payload AsrResultPayload
@@ -215,11 +302,24 @@ func (c *Client) Recv(ctx context.Context) (*Event, error) {
 		event.SessionEnded = &payload
 		if event.SessionID != nil && c.activeSessionID == *event.SessionID {
 			c.activeSessionID = ""
+			c.activeSessionDomain = ""
 		}
 	case EventTypeError:
 		var payload ErrorPayload
 		errDecode = decode(&payload)
 		event.Error = &payload
+	case EventTypeTtsVoicesResult:
+		var payload VoiceListResult
+		errDecode = decode(&payload)
+		event.TtsVoicesResult = &payload
+	case EventTypeTtsAudioDelta:
+		var payload TtsAudioDeltaPayload
+		errDecode = decode(&payload)
+		event.TtsAudioDelta = &payload
+	case EventTypeTtsAudioDone:
+		var payload TtsAudioDonePayload
+		errDecode = decode(&payload)
+		event.TtsAudioDone = &payload
 	case EventTypePong:
 		// empty payload is fine
 	default:

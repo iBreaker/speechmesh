@@ -74,6 +74,13 @@ pub enum ProviderSelectionMode {
     Provider,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamMode {
+    Buffered,
+    Streaming,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderSelector {
     pub mode: ProviderSelectionMode,

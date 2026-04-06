@@ -145,6 +145,64 @@ type SessionEndedPayload struct {
 	Reason *string `json:"reason,omitempty"`
 }
 
+type VoiceListRequest struct {
+	Provider ProviderSelector `json:"provider"`
+	Language *string          `json:"language,omitempty"`
+}
+
+type VoiceDescriptor struct {
+	ID           string   `json:"id"`
+	Language     string   `json:"language"`
+	DisplayName  string   `json:"display_name"`
+	Gender       *string  `json:"gender,omitempty"`
+	Capabilities []string `json:"capabilities"`
+}
+
+type VoiceListResult struct {
+	Voices []VoiceDescriptor `json:"voices"`
+}
+
+type SynthesisInputKind string
+
+const (
+	SynthesisInputKindText SynthesisInputKind = "text"
+	SynthesisInputKindSsml SynthesisInputKind = "ssml"
+)
+
+type TtsSynthesisOptions struct {
+	Language        *string        `json:"language,omitempty"`
+	Voice           *string        `json:"voice,omitempty"`
+	Stream          bool           `json:"stream"`
+	Rate            *float32       `json:"rate,omitempty"`
+	Pitch           *float32       `json:"pitch,omitempty"`
+	Volume          *float32       `json:"volume,omitempty"`
+	ProviderOptions map[string]any `json:"provider_options,omitempty"`
+}
+
+type TtsStreamRequest struct {
+	Provider     ProviderSelector    `json:"provider"`
+	InputKind    SynthesisInputKind  `json:"input_kind"`
+	OutputFormat *AudioFormat        `json:"output_format,omitempty"`
+	Options      TtsSynthesisOptions `json:"options"`
+}
+
+type TtsInputAppendPayload struct {
+	Delta string `json:"delta"`
+}
+
+type TtsAudioDeltaPayload struct {
+	ChunkID     uint64       `json:"chunk_id"`
+	AudioBase64 string       `json:"audio_base64"`
+	IsFinal     bool         `json:"is_final"`
+	Format      *AudioFormat `json:"format,omitempty"`
+}
+
+type TtsAudioDonePayload struct {
+	InputKind   SynthesisInputKind `json:"input_kind"`
+	TotalChunks uint64             `json:"total_chunks"`
+	TotalBytes  uint64             `json:"total_bytes"`
+}
+
 type ErrorInfo struct {
 	Code      string          `json:"code"`
 	Message   string          `json:"message"`
@@ -159,24 +217,30 @@ type ErrorPayload struct {
 type EventType string
 
 const (
-	EventTypeHelloOK        EventType = "hello.ok"
-	EventTypeDiscoverResult EventType = "discover.result"
-	EventTypeSessionStarted EventType = "session.started"
-	EventTypeASRResult      EventType = "asr.result"
-	EventTypeSessionEnded   EventType = "session.ended"
-	EventTypeError          EventType = "error"
-	EventTypePong           EventType = "pong"
+	EventTypeHelloOK         EventType = "hello.ok"
+	EventTypeDiscoverResult  EventType = "discover.result"
+	EventTypeSessionStarted  EventType = "session.started"
+	EventTypeASRResult       EventType = "asr.result"
+	EventTypeSessionEnded    EventType = "session.ended"
+	EventTypeError           EventType = "error"
+	EventTypePong            EventType = "pong"
+	EventTypeTtsVoicesResult EventType = "tts.voices.result"
+	EventTypeTtsAudioDelta   EventType = "tts.audio.delta"
+	EventTypeTtsAudioDone    EventType = "tts.audio.done"
 )
 
 type Event struct {
-	Type           EventType
-	RequestID      *string
-	SessionID      *string
-	Sequence       uint64
-	HelloOK        *HelloResponse
-	DiscoverResult *DiscoverResult
-	SessionStarted *SessionStartedPayload
-	AsrResult      *AsrResultPayload
-	SessionEnded   *SessionEndedPayload
-	Error          *ErrorPayload
+	Type            EventType
+	RequestID       *string
+	SessionID       *string
+	Sequence        uint64
+	HelloOK         *HelloResponse
+	DiscoverResult  *DiscoverResult
+	SessionStarted  *SessionStartedPayload
+	AsrResult       *AsrResultPayload
+	SessionEnded    *SessionEndedPayload
+	Error           *ErrorPayload
+	TtsVoicesResult *VoiceListResult
+	TtsAudioDelta   *TtsAudioDeltaPayload
+	TtsAudioDone    *TtsAudioDonePayload
 }
