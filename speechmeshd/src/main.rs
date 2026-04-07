@@ -173,7 +173,7 @@ struct RunArgs {
     tts_minimax_voice_id: String,
     #[arg(long, default_value_t = 32000)]
     tts_minimax_sample_rate_hz: u32,
-    #[arg(long, default_value = "wav")]
+    #[arg(long, default_value = "mp3")]
     tts_minimax_format: String,
     #[arg(long, default_value_t = 16384)]
     tts_chunk_size_bytes: usize,
