@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -7,9 +8,12 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use futures_util::{SinkExt, StreamExt};
 use speechmesh_core::{CapabilityDomain, ErrorInfo, RequestId, SessionId};
 use speechmesh_transport::{
-    AsrResultPayload, AsrWordPayload, ClientMessage, DiscoverRequest, DiscoverResult, EmptyPayload,
-    ErrorPayload, HelloResponse, ServerMessage, SessionEndedPayload, SessionStartedPayload,
-    TransportKind, TtsAudioDeltaPayload, TtsAudioDonePayload, VoiceListResult,
+    AsrResultPayload, AsrWordPayload, ClientMessage, ControlAgentStatusPayload,
+    ControlAgentStatusResultPayload, ControlDevicesListPayload, ControlErrorPayload,
+    ControlPlayAudioAcceptedPayload, ControlPlayAudioPayload, ControlRequest, ControlResponse,
+    DiscoverRequest, DiscoverResult, EmptyPayload, ErrorPayload, HelloResponse, ServerMessage,
+    SessionEndedPayload, SessionStartedPayload, TransportKind, TtsAudioDeltaPayload,
+    TtsAudioDonePayload, VoiceListResult,
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -19,7 +23,10 @@ use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{error, info, warn};
 
-use crate::agent::{AgentRegistry, handle_agent_connection};
+use crate::agent::{
+    AgentRegistry, AgentSnapshotFilter, PlayAudioRouteRequest,
+    handle_agent_connection,
+};
 use crate::asr_bridge::{BridgeAsrEvent, BridgeAsrSessionHandle, SharedAsrBridge};
 use crate::bridge_support::BridgeError;
 use crate::tts_bridge::{BridgeTtsEvent, BridgeTtsSessionHandle, SharedTtsBridge};
@@ -30,6 +37,8 @@ pub struct ServerConfig {
     pub protocol_version: String,
     pub server_name: String,
 }
+
+static CONTROL_TASK_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub async fn run_server(
     config: ServerConfig,
@@ -107,8 +116,206 @@ async fn handle_connection(
             .await
             .map_err(anyhow::Error::from);
     }
+    if path == "/control" {
+        let registry = agent_registry
+            .ok_or_else(|| anyhow::anyhow!("control endpoint requires agent registry"))?;
+        return handle_control_websocket(websocket, peer, registry)
+            .await
+            .map_err(anyhow::Error::from);
+    }
 
     handle_client_websocket(websocket, peer, config, asr_bridge, tts_bridge).await
+}
+
+async fn handle_control_websocket(
+    mut websocket: WebSocketStream<TcpStream>,
+    peer: SocketAddr,
+    agent_registry: AgentRegistry,
+) -> Result<(), BridgeError> {
+    info!("control websocket opened from {peer}");
+    while let Some(frame) = websocket.next().await {
+        let frame =
+            frame.map_err(|error| BridgeError::Io(format!("control read failed: {error}")))?;
+        match frame {
+            Message::Text(text) => {
+                let incoming = serde_json::from_str::<ControlRequest>(&text);
+                match incoming {
+                    Ok(ControlRequest::PlayAudio { payload }) => {
+                        if let Err(error) =
+                            handle_control_play_audio(&mut websocket, &agent_registry, payload)
+                                .await
+                        {
+                            send_control_error(&mut websocket, error.to_string()).await?;
+                        }
+                    }
+                    Ok(ControlRequest::DevicesList) => {
+                        if let Err(error) =
+                            handle_control_devices_list(&mut websocket, &agent_registry).await
+                        {
+                            send_control_error(&mut websocket, error.to_string()).await?;
+                        }
+                    }
+                    Ok(ControlRequest::AgentStatus { payload }) => {
+                        if let Err(error) =
+                            handle_control_agent_status(&mut websocket, &agent_registry, payload)
+                                .await
+                        {
+                            send_control_error(&mut websocket, error.to_string()).await?;
+                        }
+                    }
+                    Err(error) => {
+                        send_control_error(
+                            &mut websocket,
+                            format!("invalid control payload: {error}"),
+                        )
+                        .await?;
+                    }
+                }
+            }
+            Message::Ping(_) => {
+                send_control_message(
+                    &mut websocket,
+                    ControlResponse::Pong {},
+                )
+                .await?;
+            }
+            Message::Binary(_) => {
+                send_control_error(
+                    &mut websocket,
+                    "binary frames are unsupported on /control".to_string(),
+                )
+                .await?;
+            }
+            Message::Close(_) => break,
+            Message::Pong(_) | Message::Frame(_) => {}
+        }
+    }
+    info!("control websocket closed from {peer}");
+    Ok(())
+}
+
+async fn handle_control_play_audio(
+    websocket: &mut WebSocketStream<TcpStream>,
+    agent_registry: &AgentRegistry,
+    payload: ControlPlayAudioPayload,
+) -> Result<(), BridgeError> {
+    let task_id = payload
+        .task_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(next_control_task_id);
+    let bytes = BASE64_STANDARD
+        .decode(payload.audio_base64.as_bytes())
+        .map_err(|error| BridgeError::Protocol(format!("invalid audio_base64 payload: {error}")))?;
+    if bytes.is_empty() {
+        return Err(BridgeError::Protocol(
+            "play_audio payload is empty".to_string(),
+        ));
+    }
+
+    let routed_agent_id = agent_registry
+        .route_play_audio_start(PlayAudioRouteRequest {
+            task_id: task_id.clone(),
+            device_id: payload.device_id,
+            agent_id: payload.agent_id,
+            format: payload.format,
+        })
+        .await?;
+
+    let chunk_size = payload
+        .chunk_size_bytes
+        .filter(|value| *value > 0)
+        .unwrap_or(16 * 1024);
+    let mut chunk_count = 0_u64;
+    for chunk in bytes.chunks(chunk_size) {
+        chunk_count += 1;
+        agent_registry
+            .route_play_audio_chunk(&task_id, BASE64_STANDARD.encode(chunk))
+            .await?;
+    }
+    agent_registry.route_play_audio_finish(&task_id).await?;
+
+    send_control_message(
+        websocket,
+        ControlResponse::PlayAudioAccepted {
+            payload: ControlPlayAudioAcceptedPayload {
+                task_id,
+                routed_agent_id,
+                chunk_count,
+                total_bytes: bytes.len() as u64,
+            },
+        },
+    )
+    .await
+}
+
+async fn handle_control_devices_list(
+    websocket: &mut WebSocketStream<TcpStream>,
+    agent_registry: &AgentRegistry,
+) -> Result<(), BridgeError> {
+    let snapshot = agent_registry
+        .snapshot(AgentSnapshotFilter::default())
+        .await;
+    send_control_message(
+        websocket,
+        ControlResponse::DevicesList {
+            payload: ControlDevicesListPayload { agents: snapshot },
+        },
+    )
+    .await
+}
+
+async fn handle_control_agent_status(
+    websocket: &mut WebSocketStream<TcpStream>,
+    agent_registry: &AgentRegistry,
+    payload: ControlAgentStatusPayload,
+) -> Result<(), BridgeError> {
+    let filter = AgentSnapshotFilter {
+        agent_id: payload.agent_id.clone(),
+        device_id: payload.device_id.clone(),
+    };
+    let mut snapshot = agent_registry.snapshot(filter).await;
+    let agent = snapshot.pop();
+    send_control_message(
+        websocket,
+        ControlResponse::AgentStatus {
+            payload: ControlAgentStatusResultPayload { agent },
+        },
+    )
+    .await
+}
+
+async fn send_control_error(
+    websocket: &mut WebSocketStream<TcpStream>,
+    message: String,
+) -> Result<(), BridgeError> {
+    send_control_message(
+        websocket,
+        ControlResponse::Error {
+            payload: ControlErrorPayload { message },
+        },
+    )
+    .await
+}
+
+async fn send_control_message(
+    websocket: &mut WebSocketStream<TcpStream>,
+    message: ControlResponse,
+) -> Result<(), BridgeError> {
+    let encoded = serde_json::to_string(&message).map_err(|error| {
+        BridgeError::Protocol(format!("failed to encode control frame: {error}"))
+    })?;
+    websocket
+        .send(Message::Text(encoded.into()))
+        .await
+        .map_err(|error| BridgeError::Io(format!("control write failed: {error}")))
+}
+
+fn next_control_task_id() -> String {
+    let sequence = CONTROL_TASK_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("play-audio-{sequence}")
 }
 
 async fn handle_client_websocket(

@@ -7,8 +7,8 @@ use anyhow::{Result, anyhow};
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use speechmeshd::agent::{AgentRegistry, RemoteAgentAsrBridge, RemoteAgentAsrBridgeConfig};
 use speechmeshd::asr_bridge::{
-    CompositeAsrBridge, MockAsrBridge, SharedAsrBridge, StdioAsrBridge, StdioAsrBridgeConfig,
-    TcpAsrBridge, TcpAsrBridgeConfig,
+    CompositeAsrBridge, MiniMaxHttpAsrBridge, MiniMaxHttpAsrBridgeConfig, MockAsrBridge,
+    SharedAsrBridge, StdioAsrBridge, StdioAsrBridgeConfig, TcpAsrBridge, TcpAsrBridgeConfig,
 };
 use speechmeshd::providers::{
     InstallStateChange, InstalledAsrBridgeKind, InstalledAsrProvider, InstalledAsrProvidersConfig,
@@ -30,6 +30,7 @@ enum AsrBridgeMode {
     Stdio,
     Tcp,
     Agent,
+    MiniMaxHttp,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -131,6 +132,20 @@ struct RunArgs {
     agent_shared_secret: Option<String>,
     #[arg(long, default_value_t = 10)]
     agent_start_timeout_secs: u64,
+    #[arg(long, default_value = "minimax.asr")]
+    asr_minimax_provider_id: String,
+    #[arg(long, default_value = "MiniMax ASR")]
+    asr_minimax_provider_name: String,
+    #[arg(long, default_value = "https://api.minimaxi.com/v1")]
+    asr_minimax_base_url: String,
+    #[arg(long)]
+    asr_minimax_api_key: Option<String>,
+    #[arg(long)]
+    asr_minimax_api_key_file: Option<PathBuf>,
+    #[arg(long, default_value = "speech-01-turbo")]
+    asr_minimax_model: String,
+    #[arg(long, default_value_t = 32000)]
+    asr_minimax_streaming_partial_min_bytes: usize,
     #[arg(long, value_enum, default_value_t = TtsBridgeMode::Disabled)]
     tts_bridge_mode: TtsBridgeMode,
     #[arg(long = "tts-provider", value_enum)]
@@ -167,7 +182,7 @@ struct RunArgs {
     tts_minimax_group_id: Option<String>,
     #[arg(long)]
     tts_minimax_api_key_file: Option<PathBuf>,
-    #[arg(long, default_value = "speech-2.8-turbo")]
+    #[arg(long, default_value = "speech-2.8-hd")]
     tts_minimax_model: String,
     #[arg(long, default_value = "female-shaonv")]
     tts_minimax_voice_id: String,
@@ -563,6 +578,17 @@ fn select_asr_bridge(args: &RunArgs) -> Result<BridgeSelection> {
                 registry,
             ))
         }
+        AsrBridgeMode::MiniMaxHttp => {
+            Arc::new(MiniMaxHttpAsrBridge::new(MiniMaxHttpAsrBridgeConfig {
+                provider_id: args.asr_minimax_provider_id.clone(),
+                display_name: Some(args.asr_minimax_provider_name.clone()),
+                base_url: args.asr_minimax_base_url.clone(),
+                api_key: resolve_asr_minimax_api_key(args)?,
+                default_model: args.asr_minimax_model.clone(),
+                request_timeout: Duration::from_secs(300),
+                streaming_partial_min_bytes: args.asr_minimax_streaming_partial_min_bytes,
+            })?)
+        }
     };
     Ok(BridgeSelection {
         bridge,
@@ -656,6 +682,53 @@ fn build_installed_asr_bridge(
                 registry,
             ))
         }
+        InstalledAsrBridgeKind::MiniMaxHttp {
+            base_url,
+            model,
+            api_key_file,
+        } => Arc::new(MiniMaxHttpAsrBridge::new(MiniMaxHttpAsrBridgeConfig {
+            provider_id: provider.provider_id,
+            display_name: provider.display_name,
+            base_url,
+            api_key: resolve_provider_api_key(
+                api_key_file.as_deref().map(Path::new),
+                "MINIMAX_API_KEY",
+            )?,
+            default_model: model.unwrap_or_else(|| "speech-01-turbo".to_string()),
+            request_timeout: Duration::from_secs(300),
+            streaming_partial_min_bytes: args.asr_minimax_streaming_partial_min_bytes,
+        })?),
     };
     Ok(bridge)
+}
+
+fn resolve_asr_minimax_api_key(args: &RunArgs) -> Result<String> {
+    if let Some(value) = args.asr_minimax_api_key.as_deref() {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    resolve_provider_api_key(args.asr_minimax_api_key_file.as_deref(), "MINIMAX_API_KEY")
+        .map_err(|_| {
+            anyhow!(
+                "--asr-minimax-api-key, --asr-minimax-api-key-file, or MINIMAX_API_KEY is required when enabling the minimax-http ASR provider"
+            )
+        })
+}
+
+fn resolve_provider_api_key(path: Option<&Path>, env_key: &str) -> Result<String> {
+    if let Ok(value) = std::env::var(env_key) {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    if let Some(path) = path {
+        return read_secret_from_file(path);
+    }
+
+    Err(anyhow!("missing secret {env_key}"))
 }

@@ -64,6 +64,14 @@ pub enum InstalledAsrBridgeKind {
     Agent {
         start_timeout_secs: Option<u64>,
     },
+    MiniMaxHttp {
+        #[serde(default = "default_minimax_base_url")]
+        base_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_key_file: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +130,10 @@ pub struct ProviderInstallStatus {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_minimax_base_url() -> String {
+    "https://api.minimaxi.com/v1".to_string()
 }
 
 fn now_unix_secs() -> u64 {
@@ -360,6 +372,7 @@ pub fn bridge_mode_name(bridge: &InstalledAsrBridgeKind) -> &'static str {
         InstalledAsrBridgeKind::Stdio { .. } => "stdio",
         InstalledAsrBridgeKind::Tcp { .. } => "tcp",
         InstalledAsrBridgeKind::Agent { .. } => "agent",
+        InstalledAsrBridgeKind::MiniMaxHttp { .. } => "minimax_http",
     }
 }
 

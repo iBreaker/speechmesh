@@ -5,8 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+base64.workspace = true
+clap.workspace = true
 futures-util.workspace = true
 rustls.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 speechmesh-asr = { path = "../../asr" }
 speechmesh-core = { path = "../../core" }

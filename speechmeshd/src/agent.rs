@@ -6,11 +6,12 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
-use speechmesh_asr::{AsrSession, StreamRequest, Transcript};
+use speechmesh_asr::{AsrSession, StreamRequest};
 use speechmesh_core::{
-    Capability, CapabilityDomain, ProviderDescriptor, RuntimeMode, SessionId, StreamMode,
+    AudioFormat, Capability, CapabilityDomain, ProviderDescriptor, RuntimeMode, SessionId,
+    StreamMode,
 };
+pub use speechmesh_transport::agent::*;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time::timeout;
 use tokio_tungstenite::WebSocketStream;
@@ -24,122 +25,79 @@ use crate::asr_bridge::{
 };
 use crate::bridge_support::BridgeError;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EmptyPayload {}
+// 从 device crate 引入注册表和设备模型类型
+pub use speechmesh_device::registry::{
+    AgentRemovalResult, AgentSnapshot as DeviceAgentSnapshot, AgentSnapshotFilter,
+    RegisteredAgent as DeviceRegisteredAgent,
+};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentHelloPayload {
-    pub agent_id: String,
-    pub agent_name: String,
-    pub provider_id: String,
-    pub capabilities: Vec<String>,
-    pub shared_secret: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentHelloOkPayload {
-    pub server_name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentAudioPayload {
-    pub data_base64: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AgentFinalPayload {
-    pub transcript: Transcript,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentPartialPayload {
-    pub text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentSessionStartedPayload {
-    pub provider_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentSessionEndedPayload {
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentErrorPayload {
-    pub message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum AgentToGatewayMessage {
-    #[serde(rename = "agent.hello")]
-    Hello { payload: AgentHelloPayload },
-    #[serde(rename = "session.started")]
-    SessionStarted {
-        session_id: SessionId,
-        payload: AgentSessionStartedPayload,
-    },
-    #[serde(rename = "asr.partial")]
-    AsrPartial {
-        session_id: SessionId,
-        payload: AgentPartialPayload,
-    },
-    #[serde(rename = "asr.final")]
-    AsrFinal {
-        session_id: SessionId,
-        payload: AgentFinalPayload,
-    },
-    #[serde(rename = "session.ended")]
-    SessionEnded {
-        session_id: SessionId,
-        payload: AgentSessionEndedPayload,
-    },
-    #[serde(rename = "error")]
-    Error {
-        session_id: Option<SessionId>,
-        payload: AgentErrorPayload,
-    },
-    #[serde(rename = "pong")]
-    Pong { payload: EmptyPayload },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum GatewayToAgentMessage {
-    #[serde(rename = "agent.hello.ok")]
-    HelloOk { payload: AgentHelloOkPayload },
-    #[serde(rename = "session.start")]
-    SessionStart {
-        session_id: SessionId,
-        payload: StreamRequest,
-    },
-    #[serde(rename = "session.audio")]
-    SessionAudio {
-        session_id: SessionId,
-        payload: AgentAudioPayload,
-    },
-    #[serde(rename = "session.commit")]
-    SessionCommit {
-        session_id: SessionId,
-        payload: EmptyPayload,
-    },
-    #[serde(rename = "session.stop")]
-    SessionStop {
-        session_id: SessionId,
-        payload: EmptyPayload,
-    },
-    #[serde(rename = "ping")]
-    Ping { payload: EmptyPayload },
-}
-
+/// 播放音频路由请求
 #[derive(Debug, Clone)]
-struct RegisteredAgent {
-    agent_id: String,
-    provider_id: String,
-    command_tx: mpsc::Sender<GatewayToAgentMessage>,
+pub struct PlayAudioRouteRequest {
+    pub task_id: String,
+    pub device_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub format: Option<AudioFormat>,
 }
+
+// ── 类型转换：transport 协议类型 <-> device 注册表类型 ──
+
+/// 将 transport 层的 AgentKind 转换为 device 层的 AgentKind
+fn to_device_agent_kind(
+    kind: AgentKind,
+) -> speechmesh_device::registry::AgentKind {
+    match kind {
+        AgentKind::AsrProvider => speechmesh_device::registry::AgentKind::AsrProvider,
+        AgentKind::Device => speechmesh_device::registry::AgentKind::Device,
+    }
+}
+
+/// 将 device 层的 AgentKind 转换为 transport 层的 AgentKind
+fn from_device_agent_kind(
+    kind: speechmesh_device::registry::AgentKind,
+) -> AgentKind {
+    match kind {
+        speechmesh_device::registry::AgentKind::AsrProvider => AgentKind::AsrProvider,
+        speechmesh_device::registry::AgentKind::Device => AgentKind::Device,
+    }
+}
+
+/// 将 transport 层的 AgentDeviceIdentity 转换为 device 层的类型
+fn to_device_identity(
+    identity: &AgentDeviceIdentity,
+) -> speechmesh_device::registry::AgentDeviceIdentity {
+    speechmesh_device::registry::AgentDeviceIdentity {
+        device_id: identity.device_id.clone(),
+        hostname: identity.hostname.clone(),
+        platform: identity.platform.clone(),
+    }
+}
+
+/// 将 device 层的 AgentDeviceIdentity 转换为 transport 层的类型
+fn from_device_identity(
+    identity: &speechmesh_device::registry::AgentDeviceIdentity,
+) -> AgentDeviceIdentity {
+    AgentDeviceIdentity {
+        device_id: identity.device_id.clone(),
+        hostname: identity.hostname.clone(),
+        platform: identity.platform.clone(),
+    }
+}
+
+/// 将 DeviceAgentSnapshot 转换为 transport 层的 AgentSnapshot
+pub fn to_transport_snapshot(snapshot: &DeviceAgentSnapshot) -> AgentSnapshot {
+    AgentSnapshot {
+        agent_id: snapshot.agent_id.clone(),
+        agent_name: snapshot.agent_name.clone(),
+        provider_id: snapshot.provider_id.clone(),
+        capabilities: snapshot.capabilities.clone(),
+        capability_domains: snapshot.capability_domains.clone(),
+        agent_kind: from_device_agent_kind(snapshot.agent_kind),
+        device: snapshot.device.as_ref().map(from_device_identity),
+    }
+}
+
+// ── 会话路由（保留在 speechmeshd 中，因为依赖 BridgeAsrEvent 等协议类型）──
 
 struct SessionRoute {
     agent_id: String,
@@ -147,25 +105,20 @@ struct SessionRoute {
     started_tx: Option<oneshot::Sender<Result<(), BridgeError>>>,
 }
 
-#[derive(Default)]
-struct AgentRegistryInner {
-    agents: HashMap<String, RegisteredAgent>,
-    sessions: HashMap<SessionId, SessionRoute>,
-}
-
+/// Agent 注册表包装器
+///
+/// 在 device crate 的泛型注册表之上，增加会话路由管理（因为会话路由依赖 speechmeshd 的具体类型）。
 #[derive(Clone)]
 pub struct AgentRegistry {
-    expected_shared_secret: Option<String>,
-    inner: Arc<Mutex<AgentRegistryInner>>,
+    device_registry: speechmesh_device::registry::AgentRegistry<GatewayToAgentMessage>,
+    sessions: Arc<Mutex<HashMap<SessionId, SessionRoute>>>,
 }
 
-fn remove_agent_locked(
-    inner: &mut AgentRegistryInner,
+fn remove_orphaned_sessions(
+    sessions: &mut HashMap<SessionId, SessionRoute>,
     agent_id: &str,
 ) -> Vec<(SessionId, SessionRoute)> {
-    inner.agents.remove(agent_id);
-    let impacted_ids: Vec<SessionId> = inner
-        .sessions
+    let impacted_ids: Vec<SessionId> = sessions
         .iter()
         .filter_map(|(session_id, route)| {
             if route.agent_id == agent_id {
@@ -177,7 +130,7 @@ fn remove_agent_locked(
         .collect();
     let mut impacted = Vec::new();
     for session_id in impacted_ids {
-        if let Some(route) = inner.sessions.remove(&session_id) {
+        if let Some(route) = sessions.remove(&session_id) {
             impacted.push((session_id, route));
         }
     }
@@ -187,8 +140,9 @@ fn remove_agent_locked(
 impl AgentRegistry {
     pub fn new(expected_shared_secret: Option<String>) -> Self {
         Self {
-            expected_shared_secret,
-            inner: Arc::new(Mutex::new(AgentRegistryInner::default())),
+            device_registry:
+                speechmesh_device::registry::AgentRegistry::new(expected_shared_secret),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -197,7 +151,7 @@ impl AgentRegistry {
         hello: AgentHelloPayload,
         command_tx: mpsc::Sender<GatewayToAgentMessage>,
     ) -> Result<(), BridgeError> {
-        if let Some(expected) = self.expected_shared_secret.as_deref() {
+        if let Some(expected) = self.device_registry.expected_shared_secret() {
             if hello.shared_secret.as_deref() != Some(expected) {
                 return Err(BridgeError::Unavailable(
                     "agent authentication failed".to_string(),
@@ -205,41 +159,49 @@ impl AgentRegistry {
             }
         }
 
+        // 收集会话孤儿（如果替换旧注册）
         let orphaned_sessions = {
-            let mut inner = self.inner.lock().await;
-            let orphaned = if inner.agents.contains_key(&hello.agent_id) {
-                warn!(
-                    "replacing existing agent registration for {}",
-                    hello.agent_id
-                );
-                remove_agent_locked(&mut inner, &hello.agent_id)
-            } else {
-                Vec::new()
-            };
-            inner.agents.insert(
-                hello.agent_id.clone(),
-                RegisteredAgent {
-                    agent_id: hello.agent_id,
-                    provider_id: hello.provider_id,
-                    command_tx,
-                },
-            );
-            orphaned
+            let mut sessions = self.sessions.lock().await;
+            remove_orphaned_sessions(&mut sessions, &hello.agent_id)
         };
-        self.finish_agent_removal(orphaned_sessions).await;
+
+        // 构造 device crate 注册记录
+        let agent = DeviceRegisteredAgent {
+            agent_id: hello.agent_id,
+            agent_name: hello.agent_name,
+            provider_id: hello.provider_id,
+            capabilities: hello.capabilities,
+            capability_domains: hello.capability_domains,
+            agent_kind: to_device_agent_kind(hello.agent_kind),
+            device: hello.device.as_ref().map(to_device_identity),
+            device_info: None, // 旧版 agent 没有 device_info
+            command_tx,
+        };
+
+        let removal = self.device_registry.register_agent(agent).await;
+
+        // 处理孤儿
+        self.finish_agent_removal(orphaned_sessions, removal.orphaned_task_ids)
+            .await;
         Ok(())
     }
 
     pub async fn unregister_agent(&self, agent_id: &str) {
         let orphaned_sessions = {
-            let mut inner = self.inner.lock().await;
-            remove_agent_locked(&mut inner, agent_id)
+            let mut sessions = self.sessions.lock().await;
+            remove_orphaned_sessions(&mut sessions, agent_id)
         };
 
-        self.finish_agent_removal(orphaned_sessions).await;
+        let removal = self.device_registry.unregister_agent(agent_id).await;
+        self.finish_agent_removal(orphaned_sessions, removal.orphaned_task_ids)
+            .await;
     }
 
-    async fn finish_agent_removal(&self, orphaned_sessions: Vec<(SessionId, SessionRoute)>) {
+    async fn finish_agent_removal(
+        &self,
+        orphaned_sessions: Vec<(SessionId, SessionRoute)>,
+        orphaned_tasks: Vec<String>,
+    ) {
         for (session_id, mut route) in orphaned_sessions {
             if let Some(started_tx) = route.started_tx.take() {
                 let _ = started_tx.send(Err(BridgeError::Disconnected(format!(
@@ -260,15 +222,26 @@ impl AgentRegistry {
                     .await;
             }
         }
+        for task_id in orphaned_tasks {
+            warn!("agent disconnected before task completion task_id={task_id}");
+        }
     }
 
-    async fn select_agent(&self, provider_id: &str) -> Option<RegisteredAgent> {
-        let inner = self.inner.lock().await;
-        inner
-            .agents
-            .values()
-            .find(|agent| agent.provider_id == provider_id)
-            .cloned()
+    async fn select_agent(
+        &self,
+        provider_id: &str,
+    ) -> Option<DeviceRegisteredAgent<GatewayToAgentMessage>> {
+        self.device_registry.select_agent(provider_id).await
+    }
+
+    async fn select_speaker_agent(
+        &self,
+        device_id: Option<&str>,
+        agent_id: Option<&str>,
+    ) -> Option<DeviceRegisteredAgent<GatewayToAgentMessage>> {
+        self.device_registry
+            .select_speaker_agent(device_id, agent_id)
+            .await
     }
 
     async fn register_session(
@@ -278,8 +251,8 @@ impl AgentRegistry {
         event_tx: mpsc::Sender<BridgeAsrEvent>,
         started_tx: oneshot::Sender<Result<(), BridgeError>>,
     ) {
-        let mut inner = self.inner.lock().await;
-        inner.sessions.insert(
+        let mut sessions = self.sessions.lock().await;
+        sessions.insert(
             session_id,
             SessionRoute {
                 agent_id,
@@ -290,15 +263,14 @@ impl AgentRegistry {
     }
 
     async fn remove_session(&self, session_id: &SessionId) -> Option<SessionRoute> {
-        let mut inner = self.inner.lock().await;
-        inner.sessions.remove(session_id)
+        let mut sessions = self.sessions.lock().await;
+        sessions.remove(session_id)
     }
 
     async fn mark_session_started(&self, session_id: &SessionId) {
         let started_tx = {
-            let mut inner = self.inner.lock().await;
-            inner
-                .sessions
+            let mut sessions = self.sessions.lock().await;
+            sessions
                 .get_mut(session_id)
                 .and_then(|route| route.started_tx.take())
         };
@@ -330,9 +302,8 @@ impl AgentRegistry {
 
     async fn route_event(&self, session_id: &SessionId, event: BridgeAsrEvent) {
         let event_tx = {
-            let inner = self.inner.lock().await;
-            inner
-                .sessions
+            let sessions = self.sessions.lock().await;
+            sessions
                 .get(session_id)
                 .map(|route| route.event_tx.clone())
         };
@@ -351,6 +322,118 @@ impl AgentRegistry {
                 let _ = route.event_tx.send(BridgeAsrEvent::Ended { reason }).await;
             }
         }
+    }
+
+    async fn register_task(&self, task_id: String, agent_id: String) -> Result<(), BridgeError> {
+        self.device_registry
+            .register_task(task_id.clone(), agent_id)
+            .await
+            .map_err(|msg| BridgeError::Unavailable(msg))
+    }
+
+    async fn remove_task(&self, task_id: &str) {
+        self.device_registry.remove_task(task_id).await;
+    }
+
+    async fn task_agent_id(&self, task_id: &str) -> Option<String> {
+        self.device_registry.task_agent_id(task_id).await
+    }
+
+    pub async fn route_play_audio_start(
+        &self,
+        request: PlayAudioRouteRequest,
+    ) -> Result<String, BridgeError> {
+        let task_id = request.task_id.trim().to_string();
+        if task_id.is_empty() {
+            return Err(BridgeError::Unavailable(
+                "task_id is required for play_audio routing".to_string(),
+            ));
+        }
+        let agent = self
+            .select_speaker_agent(request.device_id.as_deref(), request.agent_id.as_deref())
+            .await
+            .ok_or_else(|| {
+                BridgeError::Unavailable(
+                    "no registered speaker agent matches the play_audio route".to_string(),
+                )
+            })?;
+        self.register_task(task_id.clone(), agent.agent_id.clone())
+            .await?;
+        let send_result = agent
+            .command_tx
+            .send(GatewayToAgentMessage::TaskPlayAudioStart {
+                task_id: task_id.clone(),
+                payload: AgentPlayAudioStartPayload {
+                    format: request.format,
+                },
+            })
+            .await;
+        if send_result.is_err() {
+            self.remove_task(&task_id).await;
+            return Err(BridgeError::Disconnected(format!(
+                "failed to deliver play_audio start to agent {}",
+                agent.agent_name
+            )));
+        }
+        Ok(agent.agent_id)
+    }
+
+    pub async fn route_play_audio_chunk(
+        &self,
+        task_id: &str,
+        data_base64: String,
+    ) -> Result<(), BridgeError> {
+        let agent_id = self.task_agent_id(task_id).await.ok_or_else(|| {
+            BridgeError::Unavailable(format!("unknown play_audio task_id {task_id}"))
+        })?;
+        let command_tx = self.device_registry.agent_command_tx(&agent_id).await;
+        let Some(command_tx) = command_tx else {
+            self.remove_task(task_id).await;
+            return Err(BridgeError::Disconnected(format!(
+                "agent {agent_id} is no longer available for task {task_id}"
+            )));
+        };
+        if command_tx
+            .send(GatewayToAgentMessage::TaskPlayAudioChunk {
+                task_id: task_id.to_string(),
+                payload: AgentPlayAudioChunkPayload { data_base64 },
+            })
+            .await
+            .is_err()
+        {
+            self.remove_task(task_id).await;
+            return Err(BridgeError::Disconnected(format!(
+                "failed to deliver play_audio chunk for task {task_id}"
+            )));
+        }
+        Ok(())
+    }
+
+    pub async fn route_play_audio_finish(&self, task_id: &str) -> Result<(), BridgeError> {
+        let agent_id = self.task_agent_id(task_id).await.ok_or_else(|| {
+            BridgeError::Unavailable(format!("unknown play_audio task_id {task_id}"))
+        })?;
+        let command_tx = self.device_registry.agent_command_tx(&agent_id).await;
+        let Some(command_tx) = command_tx else {
+            self.remove_task(task_id).await;
+            return Err(BridgeError::Disconnected(format!(
+                "agent {agent_id} is no longer available for task {task_id}"
+            )));
+        };
+        if command_tx
+            .send(GatewayToAgentMessage::TaskPlayAudioFinish {
+                task_id: task_id.to_string(),
+                payload: AgentEmptyPayload {},
+            })
+            .await
+            .is_err()
+        {
+            self.remove_task(task_id).await;
+            return Err(BridgeError::Disconnected(format!(
+                "failed to deliver play_audio finish for task {task_id}"
+            )));
+        }
+        Ok(())
     }
 
     pub async fn handle_agent_message(&self, message: AgentToGatewayMessage) {
@@ -391,9 +474,8 @@ impl AgentRegistry {
                 payload,
             } => {
                 let has_pending_start = {
-                    let inner = self.inner.lock().await;
-                    inner
-                        .sessions
+                    let sessions = self.sessions.lock().await;
+                    sessions
                         .get(&session_id)
                         .and_then(|route| route.started_tx.as_ref())
                         .is_some()
@@ -417,10 +499,35 @@ impl AgentRegistry {
             } => {
                 warn!("agent sent global error: {}", payload.message);
             }
+            AgentToGatewayMessage::TaskStatus { task_id, payload } => {
+                let route = self.task_agent_id(&task_id).await;
+                if route.is_none() {
+                    warn!(
+                        "agent task status for unknown task_id={task_id} state={:?} message={:?}",
+                        payload.state, payload.message
+                    );
+                    return;
+                }
+                debug!(
+                    "agent task status update task_id={task_id} state={:?} message={:?}",
+                    payload.state, payload.message
+                );
+                if matches!(
+                    payload.state,
+                    AgentTaskState::Finished | AgentTaskState::Failed
+                ) {
+                    self.remove_task(&task_id).await;
+                }
+            }
             AgentToGatewayMessage::Pong { .. } => {
                 debug!("agent pong received");
             }
         }
+    }
+
+    pub async fn snapshot(&self, filter: AgentSnapshotFilter) -> Vec<AgentSnapshot> {
+        let device_snapshots = self.device_registry.snapshot(filter).await;
+        device_snapshots.iter().map(to_transport_snapshot).collect()
     }
 }
 
@@ -602,11 +709,11 @@ async fn forward_commands_to_agent(
             },
             BridgeCommand::Commit => GatewayToAgentMessage::SessionCommit {
                 session_id: session_id.clone(),
-                payload: EmptyPayload {},
+                payload: AgentEmptyPayload {},
             },
             BridgeCommand::Stop => GatewayToAgentMessage::SessionStop {
                 session_id: session_id.clone(),
-                payload: EmptyPayload {},
+                payload: AgentEmptyPayload {},
             },
         };
         if agent_tx.send(outbound).await.is_err() {
@@ -660,11 +767,21 @@ pub async fn handle_agent_connection(
     };
 
     let agent_id = hello_payload.agent_id.clone();
+    let agent_kind = hello_payload.agent_kind;
+    let provider_id = hello_payload.provider_id.clone();
+    let capability_count = hello_payload.capabilities.len();
+    let domain_count = hello_payload.capability_domains.len();
+    let device_id = hello_payload
+        .device
+        .as_ref()
+        .map(|device| device.device_id.clone());
     let (command_tx, mut command_rx) = mpsc::channel::<GatewayToAgentMessage>(64);
     registry
         .register_agent(hello_payload, command_tx.clone())
         .await?;
-    info!("agent {agent_id} connected from {peer}");
+    info!(
+        "agent {agent_id} connected from {peer} kind={agent_kind:?} provider_id={provider_id:?} capabilities={capability_count} capability_domains={domain_count} device_id={device_id:?}"
+    );
 
     let writer = tokio::spawn(async move {
         while let Some(message) = command_rx.recv().await {
@@ -699,7 +816,7 @@ pub async fn handle_agent_connection(
             Message::Ping(payload) => {
                 let _ = command_tx
                     .send(GatewayToAgentMessage::Ping {
-                        payload: EmptyPayload {},
+                        payload: AgentEmptyPayload {},
                     })
                     .await;
                 debug!("agent ping from {peer} bytes={}", payload.len());
@@ -754,7 +871,7 @@ async fn run_local_agent_once(config: &LocalAgentConfig) -> Result<(), BridgeErr
         .await
         .map_err(|error| BridgeError::Unavailable(format!("connect gateway failed: {error}")))?;
     info!(
-        "apple agent {} connected to gateway status={}",
+        "local ASR agent {} connected to gateway status={}",
         config.agent_id,
         response.status()
     );
@@ -789,8 +906,24 @@ async fn run_local_agent_once(config: &LocalAgentConfig) -> Result<(), BridgeErr
             payload: AgentHelloPayload {
                 agent_id: config.agent_id.clone(),
                 agent_name: config.agent_name.clone(),
-                provider_id: config.provider_id.clone(),
+                provider_id: Some(config.provider_id.clone()),
                 capabilities: vec!["streaming-input".to_string(), "interim-results".to_string()],
+                capability_domains: vec![CapabilityDomain::Asr],
+                agent_kind: AgentKind::AsrProvider,
+                device: Some(AgentDeviceIdentity {
+                    device_id: std::env::var("HOSTNAME")
+                        .ok()
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| config.agent_id.clone()),
+                    hostname: std::env::var("HOSTNAME")
+                        .ok()
+                        .filter(|value| !value.trim().is_empty()),
+                    platform: Some(format!(
+                        "{}-{}",
+                        std::env::consts::OS,
+                        std::env::consts::ARCH
+                    )),
+                }),
                 shared_secret: config.shared_secret.clone(),
             },
         })
@@ -842,7 +975,7 @@ async fn run_local_agent_once(config: &LocalAgentConfig) -> Result<(), BridgeErr
             Message::Ping(_) => {
                 let _ = out_tx
                     .send(AgentToGatewayMessage::Pong {
-                        payload: EmptyPayload {},
+                        payload: AgentEmptyPayload {},
                     })
                     .await;
             }
@@ -1002,10 +1135,26 @@ async fn handle_gateway_message(
                 }
             }
         }
+        GatewayToAgentMessage::TaskPlayAudioStart { task_id, .. }
+        | GatewayToAgentMessage::TaskPlayAudioChunk { task_id, .. }
+        | GatewayToAgentMessage::TaskPlayAudioFinish { task_id, .. } => {
+            let _ = out_tx
+                .send(AgentToGatewayMessage::TaskStatus {
+                    task_id,
+                    payload: AgentTaskStatusPayload {
+                        state: AgentTaskState::Failed,
+                        message: Some(
+                            "play_audio tasks are not supported by this ASR-only local agent"
+                                .to_string(),
+                        ),
+                    },
+                })
+                .await;
+        }
         GatewayToAgentMessage::Ping { .. } => {
             let _ = out_tx
                 .send(AgentToGatewayMessage::Pong {
-                    payload: EmptyPayload {},
+                    payload: AgentEmptyPayload {},
                 })
                 .await;
         }

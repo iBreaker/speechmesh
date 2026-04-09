@@ -47,6 +47,21 @@
       },
       "bridge_mode": "tcp",
       "address": "127.0.0.1:9902"
+    },
+    {
+      "provider_id": "minimax.asr",
+      "display_name": "MiniMax ASR",
+      "description": "MiniMax cloud ASR routed through the gateway over its HTTP transcription API.",
+      "enabled_by_default": false,
+      "install": {
+        "download_required": false,
+        "notes": [
+          "Set MINIMAX_API_KEY in the gateway environment or provide api_key_file in state before enabling traffic."
+        ]
+      },
+      "bridge_mode": "mini_max_http",
+      "base_url": "https://api.minimaxi.com/v1",
+      "model": "speech-01-turbo"
     }
   ]
 }

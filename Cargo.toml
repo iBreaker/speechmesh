@@ -5,6 +5,8 @@ members = [
   "asr",
   "tts",
   "transport",
+  "device",
+  "bridges",
   "speechmeshd",
   "sdks/rust",
 ]

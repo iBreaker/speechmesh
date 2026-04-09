@@ -1207,6 +1207,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "speechmesh-bridges"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "speechmesh-asr",
+ "speechmesh-core",
+ "speechmesh-transport",
+ "speechmesh-tts",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+]
+
+[[package]]
 name = "speechmesh-core"
 version = "0.1.0"
 dependencies = [
@@ -1216,12 +1236,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "speechmesh-device"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "speechmesh-core",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "speechmesh-sdk"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64",
+ "clap",
  "futures-util",
  "rustls",
+ "serde",
  "serde_json",
  "speechmesh-asr",
  "speechmesh-core",
@@ -1271,7 +1305,9 @@ dependencies = [
  "serde",
  "serde_json",
  "speechmesh-asr",
+ "speechmesh-bridges",
  "speechmesh-core",
+ "speechmesh-device",
  "speechmesh-transport",
  "speechmesh-tts",
  "thiserror",

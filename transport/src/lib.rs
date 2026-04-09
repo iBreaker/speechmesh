@@ -1,3 +1,6 @@
+pub mod agent;
+pub mod control;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use speechmesh_asr::{StreamRequest, TranscribeRequest};
@@ -7,6 +10,16 @@ use speechmesh_core::{
 };
 use speechmesh_tts::{StreamRequest as TtsStreamRequest, SynthesisInputKind, VoiceDescriptor};
 use thiserror::Error;
+
+pub use agent::{
+    AgentDeviceIdentity, AgentEmptyPayload, AgentHelloOkPayload, AgentHelloPayload, AgentKind,
+    AgentSnapshot, AgentToGatewayMessage, GatewayToAgentMessage,
+};
+pub use control::{
+    ControlAgentStatusPayload, ControlAgentStatusResultPayload, ControlDevicesListPayload,
+    ControlErrorPayload, ControlPlayAudioAcceptedPayload, ControlPlayAudioPayload,
+    ControlRequest, ControlResponse,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
