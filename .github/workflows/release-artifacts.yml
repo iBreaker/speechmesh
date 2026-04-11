@@ -140,9 +140,21 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ steps.meta.outputs.tag }}"
+          mapfile -d '' -t release_files < <(
+            find \
+              dist/downloaded/release-linux-x86_64 \
+              dist/downloaded/release-macos-arm64 \
+              -type f \
+              -print0 \
+            | sort -z
+          )
+          if [[ ${#release_files[@]} -eq 0 ]]; then
+            echo "no release files found to upload" >&2
+            exit 1
+          fi
+          printf 'uploading release file: %s\n' "${release_files[@]}"
           gh release upload "$tag" \
-            dist/downloaded/release-linux-x86_64/* \
-            dist/downloaded/release-macos-arm64/* \
+            "${release_files[@]}" \
             --repo "${GITHUB_REPOSITORY}" \
             --clobber
 
