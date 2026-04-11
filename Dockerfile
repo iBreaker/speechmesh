@@ -6,6 +6,9 @@ COPY core ./core
 COPY asr ./asr
 COPY tts ./tts
 COPY transport ./transport
+COPY device ./device
+COPY bridges ./bridges
+COPY app ./app
 COPY speechmeshd ./speechmeshd
 COPY sdks/rust ./sdks/rust
 

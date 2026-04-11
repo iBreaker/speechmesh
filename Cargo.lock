@@ -1196,6 +1196,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "speechmesh-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "reqwest",
+ "ring",
+ "semver",
+ "serde",
+ "serde_json",
+ "speechmesh-sdk",
+ "speechmeshd",
+ "tokio",
+]
+
+[[package]]
 name = "speechmesh-asr"
 version = "0.1.0"
 dependencies = [

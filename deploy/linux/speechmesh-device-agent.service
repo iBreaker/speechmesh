@@ -1,0 +1,17 @@
+[Unit]
+Description=SpeechMesh Device Speaker Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=__BINARY_PATH__ agent run --gateway-url __GATEWAY_URL__ --agent-id __AGENT_ID__ --agent-name "__AGENT_NAME__" --device-id __DEVICE_ID__ --provider-id device.speaker --shared-secret __SHARED_SECRET__ --capability speaker --reconnect-delay-secs 2
+Restart=always
+RestartSec=2
+WorkingDirectory=__REPO_ROOT__
+Environment=RUST_LOG=info
+StandardOutput=append:__HOME__/.local/state/speechmesh/device-agent.log
+StandardError=append:__HOME__/.local/state/speechmesh/device-agent.err.log
+
+[Install]
+WantedBy=default.target

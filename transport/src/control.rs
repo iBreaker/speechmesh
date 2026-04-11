@@ -30,6 +30,8 @@ pub struct ControlPlayAudioPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<AudioFormat>,

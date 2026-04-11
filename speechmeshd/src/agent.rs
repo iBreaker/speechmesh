@@ -36,6 +36,7 @@ pub use speechmesh_device::registry::{
 pub struct PlayAudioRouteRequest {
     pub task_id: String,
     pub device_id: Option<String>,
+    pub output_target: Option<String>,
     pub agent_id: Option<String>,
     pub format: Option<AudioFormat>,
 }
@@ -783,7 +784,7 @@ pub async fn handle_agent_connection(
         "agent {agent_id} connected from {peer} kind={agent_kind:?} provider_id={provider_id:?} capabilities={capability_count} capability_domains={domain_count} device_id={device_id:?}"
     );
 
-    let writer = tokio::spawn(async move {
+    let mut writer = tokio::spawn(async move {
         while let Some(message) = command_rx.recv().await {
             let encoded = serde_json::to_string(&message).map_err(|error| {
                 BridgeError::Protocol(format!("encode agent message failed: {error}"))
@@ -802,33 +803,53 @@ pub async fn handle_agent_connection(
         .await
         .map_err(|_| BridgeError::Disconnected("agent writer closed".to_string()))?;
 
-    while let Some(frame) = source.next().await {
-        let frame =
-            frame.map_err(|error| BridgeError::Io(format!("read agent frame failed: {error}")))?;
-        match frame {
-            Message::Text(text) => {
-                let message =
-                    serde_json::from_str::<AgentToGatewayMessage>(&text).map_err(|error| {
-                        BridgeError::Protocol(format!("invalid agent frame payload: {error}"))
-                    })?;
-                registry.handle_agent_message(message).await;
+    let mut writer_result = None;
+    loop {
+        tokio::select! {
+            frame = source.next() => {
+                let Some(frame) = frame else {
+                    break;
+                };
+                let frame = frame.map_err(|error| {
+                    BridgeError::Io(format!("read agent frame failed: {error}"))
+                })?;
+                match frame {
+                    Message::Text(text) => {
+                        let message = serde_json::from_str::<AgentToGatewayMessage>(&text)
+                            .map_err(|error| {
+                                BridgeError::Protocol(format!(
+                                    "invalid agent frame payload: {error}"
+                                ))
+                            })?;
+                        registry.handle_agent_message(message).await;
+                    }
+                    Message::Ping(payload) => {
+                        let _ = command_tx
+                            .send(GatewayToAgentMessage::Ping {
+                                payload: AgentEmptyPayload {},
+                            })
+                            .await;
+                        debug!("agent ping from {peer} bytes={}", payload.len());
+                    }
+                    Message::Close(_) => break,
+                    Message::Pong(_) | Message::Binary(_) | Message::Frame(_) => {}
+                }
             }
-            Message::Ping(payload) => {
-                let _ = command_tx
-                    .send(GatewayToAgentMessage::Ping {
-                        payload: AgentEmptyPayload {},
-                    })
-                    .await;
-                debug!("agent ping from {peer} bytes={}", payload.len());
+            result = &mut writer => {
+                writer_result = Some(result);
+                break;
             }
-            Message::Close(_) => break,
-            Message::Pong(_) | Message::Binary(_) | Message::Frame(_) => {}
         }
     }
 
     registry.unregister_agent(&agent_id).await;
     drop(command_tx);
-    match writer.await {
+    let writer_result = if let Some(result) = writer_result.take() {
+        result
+    } else {
+        writer.await
+    };
+    match writer_result {
         Ok(Ok(())) => {}
         Ok(Err(error)) => warn!("agent writer failed for {agent_id}: {error}"),
         Err(error) => warn!("agent writer join failed for {agent_id}: {error}"),

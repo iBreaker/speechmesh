@@ -11,7 +11,7 @@ The current production path is WebSocket-first:
 
 - `speechmeshd` is the Rust gateway/runtime daemon
 - `/ws` is the client-facing WebSocket endpoint
-- `/agent` is the macOS agent endpoint for Apple-backed providers
+- `/agent` is the agent-facing WebSocket endpoint for device speaker agents and provider agents (including Apple-backed providers)
 - Apple Speech stays on macOS while the heavier gateway path runs in Linux or Kubernetes
 - local or remote TTS engines can sit behind the same gateway contract
 - first-party Rust and Go SDKs provide a stable client entry point for remote devices
@@ -172,6 +172,9 @@ The repository already includes:
 - Linux deployment helper: `scripts/deploy_k8s.sh`
 - macOS LaunchAgent asset: `deploy/macos/io.speechmesh.apple-agent.plist`
 - macOS installer helper: `scripts/install_apple_agent_service.sh`
+- device-agent LaunchAgent asset: `deploy/macos/io.speechmesh.device-agent.plist`
+- Linux systemd user unit template: `deploy/linux/speechmesh-device-agent.service`
+- cross-platform device-agent installer helper: `scripts/install_device_agent_service.sh`
 
 Typical flow:
 
@@ -181,6 +184,20 @@ Typical flow:
   --gateway-url wss://speechmesh.example.com/agent \
   --agent-id apple-agent-1 \
   --agent-name "Apple ASR Agent" \
+  --shared-secret "change-me"
+./scripts/install_device_agent_service.sh install \
+  --gateway-url wss://speechmesh.example.com/agent \
+  --agent-id mac01-speaker-agent \
+  --agent-name "Mac 01 Speaker Agent" \
+  --device-id mac01 \
+  --shared-secret "change-me"
+# on Linux host (systemd --user):
+./scripts/install_device_agent_service.sh install \
+  --platform linux \
+  --gateway-url wss://speechmesh.example.com/agent \
+  --agent-id linux01-speaker-agent \
+  --agent-name "Linux 01 Speaker Agent" \
+  --device-id linux01 \
   --shared-secret "change-me"
 ./scripts/run_ws_asr_e2e.sh wss://speechmesh.example.com/ws "speech mesh"
 ```
@@ -213,6 +230,7 @@ Examples:
 
 ```text
 speechmesh/
+  app/                  unified client binary entrypoint (`speechmesh`)
   asr/                  ASR contracts and provider-facing types
   bridges/apple-asr/    internal macOS Apple Speech bridge
   core/                 shared runtime concepts
@@ -220,7 +238,7 @@ speechmesh/
   examples/             runnable clients and validation tools
   sdks/go/              first-party Go client SDK
   sdks/rust/            first-party Rust client SDK
-  speechmeshd/          WebSocket gateway and agent binaries
+  speechmeshd/          WebSocket gateway daemon (`speechmeshd`)
   transport/            shared transport contract types
   tts/                  TTS contracts and provider-facing types
 ```

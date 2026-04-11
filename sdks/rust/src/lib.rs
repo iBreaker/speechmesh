@@ -1,5 +1,7 @@
 use std::sync::Once;
 
+extern crate self as speechmesh_sdk;
+
 use futures_util::{SinkExt, StreamExt};
 use speechmesh_core::{RequestId, SessionId};
 use speechmesh_transport::{
@@ -12,6 +14,9 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 static RUSTLS_INIT: Once = Once::new();
+
+#[path = "bin/speechmesh-cli.rs"]
+pub mod cli_app;
 
 pub use speechmesh_asr::{RecognitionOptions, StreamRequest};
 pub use speechmesh_core::{

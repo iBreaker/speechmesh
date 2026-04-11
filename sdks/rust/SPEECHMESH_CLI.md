@@ -1,19 +1,20 @@
-# speechmesh-cli
+# speechmesh
 
-`speechmesh-cli` is the unified SpeechMesh client binary.
+`speechmesh` is the unified SpeechMesh client binary.
 
 It talks to a SpeechMesh gateway over the stable `/ws` WebSocket endpoint and is intended to be usable by both humans and automation/agents without reading the source code.
 
 ## Core commands
 
 ```bash
-speechmesh-cli discover providers --json
-speechmesh-cli tts voices --provider minimax.tts --json
-speechmesh-cli tts play --provider minimax.tts --text "Hello from SpeechMesh"
-speechmesh-cli tts stream --provider minimax.tts --text "Hello" > out.mp3
-speechmesh-cli asr transcribe --provider mock.asr --stdin < audio.pcm
-speechmesh-cli say --device mac03 --text "Route this to a remote speaker"
-speechmesh-cli say --text "Use the configured default target device"
+speechmesh discover providers --json
+speechmesh tts voices --provider minimax.tts --json
+speechmesh tts play --provider minimax.tts --text "Hello from SpeechMesh"
+speechmesh tts stream --provider minimax.tts --text "Hello" > out.mp3
+speechmesh asr transcribe --provider mock.asr --stdin < audio.pcm
+speechmesh say --device mac03 --text "Route this to a remote speaker"
+speechmesh say --text "Use the configured default target device"
+speechmesh agent run --agent-id mac03-speaker-agent --device-id mac03
 ```
 
 ## Important behavior
@@ -23,8 +24,9 @@ speechmesh-cli say --text "Use the configured default target device"
 - `asr transcribe` reads bytes from `--file` or `--stdin` and prints the final text to `stdout`.
 - All commands accept `--url` to point at a different SpeechMesh `/ws` endpoint.
 - Use `--json` for one-shot structured output and `--jsonl` for streaming machine-readable events.
-- `say` sends TTS to the gateway and then tells a remote `speechmesh-agent` to play it on that machine's current OS default output device.
+- `say` sends TTS to the gateway and then tells a remote `speechmesh agent run` process to play it on that machine's current OS default output device.
 - Most runtime options can be omitted when matching values are set under `profiles.<name>.defaults` in `~/.speechmesh/config.yml`.
+- `speechmesh say` and `speechmesh tts play/stream` can also pull provider/voice/language/rate/pitch/volume from a named `voice_profile`; if `--voice-profile` is omitted the CLI auto-selects one from `project_voice_profiles` using the current working directory's longest matching root prefix.
 
 ## Client config defaults
 
@@ -38,8 +40,8 @@ profiles:
       ws_url: wss://speechmesh.svc.lan.breaker.host/ws
       control_url: wss://speechmesh.svc.lan.breaker.host/control
       agent_url: wss://speechmesh.svc.lan.breaker.host/agent
-    client_name: speechmesh-cli
-    shared_secret: speechmesh-agent-20260405-6c0e7f4b
+    client_name: speechmesh
+    shared_secret: speechmesh-device-20260405-6c0e7f4b
     defaults:
       device: mac03
       provider: minimax.tts
@@ -63,12 +65,49 @@ profiles:
       asr_punctuation: true
       asr_timestamps: false
       asr_hints: speechmesh,codex
+
+voice_profiles:
+  speechmesh:
+    provider: minimax.tts
+    voice: calm_male
+    language: zh-CN
+    rate: 1.0
+  docs:
+    provider: minimax.tts
+    voice: bright_female
+    language: zh-CN
+
+project_voice_profiles:
+  speechmesh:
+    root: /Users/breaker/src/speechmesh
+    voice_profile: speechmesh
+  docs:
+    root: /Users/breaker/src/docs
+    voice_profile: docs
 ```
 
 - `active_profile` selects the profile used by default.
-- `profiles.<name>.gateway.*` provides the gateway endpoints for `speechmesh-cli` and `speechmesh-agent`.
+- `profiles.<name>.gateway.*` provides the gateway endpoints for `speechmesh` and `speechmesh agent run`.
 - `profiles.<name>.shared_secret` is the agent handshake secret.
 - `profiles.<name>.defaults.*` provides per-client fallbacks for `say`, `tts`, and `asr`. Any flag (`--device`, `--provider`, `--volume`, `--encoding`, etc.) passed on the command line overrides the defaults; if a flag is omitted and a matching `defaults` entry exists the CLI uses it automatically, otherwise the provider or gateway picks a sensible value.
+- `voice_profiles.<name>` is the minimal reusable voice bundle for TTS behavior: `provider`, `voice`, `language`, `rate`, `pitch`, and `volume`.
+- `project_voice_profiles.<name>` binds a project root path to a `voice_profile`; when multiple roots match the current working directory, the most specific root wins.
+
+### Voice profile precedence
+
+- Explicit TTS flags win first: `--provider`, `--voice`, `--language`, `--rate`, `--pitch`, `--volume`
+- Then explicit `--voice-profile`
+- Then auto-selected `project_voice_profiles` entry from the current working directory
+- Then `profiles.<name>.defaults.*`
+
+Example:
+
+```bash
+cd /Users/breaker/src/speechmesh
+speechmesh say --device mac01 --text "自动带 speechmesh 项目的 voice profile"
+speechmesh say --device mac01 --voice-profile docs --text "临时改用 docs profile"
+speechmesh say --device mac01 --voice-profile docs --voice custom-voice --text "显式 --voice 仍然覆盖 profile"
+```
 
 ### Default coverage
 
@@ -87,5 +126,5 @@ The CLI aggregates these `defaults` once per run, so you can keep your commands 
 - The gateway must be reachable at `--url`.
 - TTS/ASR providers must already be installed on the target gateway.
 - `tts play` depends on a local audio player; the current implementation uses `ffplay`.
-- `speechmesh-cli doctor` is available today and runs a `/ws` health check plus optional `/control` play test.
-- `speechmesh-cli devices` and `speechmesh-cli agent status` are planned. Once the `/control` endpoints introduced in `speechmeshd` land, they will expose registered agents/devices and recent task status; the CLI will respect `profiles.<name>.defaults.device` when targeting a specific machine.
+- `speechmesh doctor` is available today and runs a `/ws` health check plus optional `/control` play test.
+- `speechmesh devices` and `speechmesh agent status` are available and read from `/control` endpoints exposed by `speechmeshd`.

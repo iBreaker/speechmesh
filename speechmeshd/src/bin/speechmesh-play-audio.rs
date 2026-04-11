@@ -34,7 +34,7 @@ struct Cli {
     file: PathBuf,
     #[arg(long, help = "Optional explicit task id")]
     task_id: Option<String>,
-    #[arg(long, help = "Optional target device id (for example: mac01)")]
+    #[arg(long, help = "Optional target device id or host:output target (for example: mac01 or mac01:airpod)")]
     device_id: Option<String>,
     #[arg(long, help = "Optional target agent id")]
     agent_id: Option<String>,
@@ -59,6 +59,25 @@ enum AudioEncodingArg {
     Flac,
 }
 
+fn parse_playback_target(raw: &str) -> Result<(String, Option<String>)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("playback target cannot be empty");
+    }
+    let Some((device_id, output_target)) = trimmed.split_once(':') else {
+        return Ok((trimmed.to_string(), None));
+    };
+    let device_id = device_id.trim();
+    let output_target = output_target.trim();
+    if device_id.is_empty() {
+        bail!("playback target host is empty in {trimmed:?}");
+    }
+    if output_target.is_empty() {
+        bail!("playback target output is empty in {trimmed:?}");
+    }
+    Ok((device_id.to_string(), Some(output_target.to_string())))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -77,11 +96,17 @@ async fn main() -> Result<()> {
         sample_rate_hz: cli.sample_rate,
         channels: cli.channels,
     });
+    let parsed_target = cli
+        .device_id
+        .as_deref()
+        .map(parse_playback_target)
+        .transpose()?;
 
     let message = ControlRequest::PlayAudio {
         payload: ControlPlayAudioPayload {
             task_id: cli.task_id,
-            device_id: cli.device_id,
+            device_id: parsed_target.as_ref().map(|target| target.0.clone()),
+            output_target: parsed_target.and_then(|target| target.1),
             agent_id: cli.agent_id,
             format,
             audio_base64: BASE64_STANDARD.encode(bytes),

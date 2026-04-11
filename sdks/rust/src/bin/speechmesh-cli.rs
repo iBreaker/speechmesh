@@ -1,12 +1,14 @@
+use std::ffi::OsString;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::{collections::HashMap, env};
 use std::{fs, io};
 
-use anyhow::{Context, Result, anyhow, bail};
-use base64::Engine;
+use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -17,8 +19,8 @@ use speechmesh_sdk::{
 };
 use speechmesh_transport::{
     AgentSnapshot, ClientMessage, ControlAgentStatusPayload, ControlAgentStatusResultPayload,
-    ControlDevicesListPayload, ControlPlayAudioAcceptedPayload,
-    ControlPlayAudioPayload, ControlRequest, ControlResponse, HelloRequest, ServerMessage,
+    ControlDevicesListPayload, ControlPlayAudioAcceptedPayload, ControlPlayAudioPayload,
+    ControlRequest, ControlResponse, HelloRequest, ServerMessage,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::process::{ChildStdin, Command};
@@ -27,13 +29,13 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 
 const CLI_AFTER_HELP: &str = "\
 Examples:
-  speechmesh-cli say --device mac01 --text \"你好\"
-  speechmesh-cli --config ~/.speechmesh/config.yml say --device mac01 --text \"你好\"
-  speechmesh-cli discover providers --json
-  speechmesh-cli tts voices --provider minimax.tts --json
-  speechmesh-cli tts play --provider minimax.tts --text \"Hello from SpeechMesh\"
-  speechmesh-cli tts stream --provider minimax.tts --text \"Hello\" > out.mp3
-  speechmesh-cli asr transcribe --provider mock.asr --stdin < audio.pcm
+  speechmesh say --device mac01 --text \"你好\"
+  speechmesh --config ~/.speechmesh/config.yml say --device mac01 --text \"你好\"
+  speechmesh discover providers --json
+  speechmesh tts voices --provider minimax.tts --json
+  speechmesh tts play --provider minimax.tts --text \"Hello from SpeechMesh\"
+  speechmesh tts stream --provider minimax.tts --text \"Hello\" > out.mp3
+  speechmesh asr transcribe --provider mock.asr --stdin < audio.pcm
 
 Notes:
   - `say` sends text to the gateway for TTS, then routes playback to a target device agent.
@@ -44,8 +46,8 @@ Notes:
 
 const DISCOVER_AFTER_HELP: &str = "\
 Examples:
-  speechmesh-cli discover providers
-  speechmesh-cli discover providers --domain tts --json";
+  speechmesh discover providers
+  speechmesh discover providers --domain tts --json";
 
 const DOCTOR_AFTER_HELP: &str = "\
 Runs a lightweight end-to-end health check against the configured gateway.
@@ -57,24 +59,24 @@ Checks:
   playback  Optional `/control` route test using a tiny silent WAV payload.
 
 Examples:
-  speechmesh-cli doctor
-  speechmesh-cli doctor --skip-playback
-  speechmesh-cli doctor --device mac03 --json";
+  speechmesh doctor
+  speechmesh doctor --skip-playback
+  speechmesh doctor --device mac03 --json";
 
 const DEVICES_AFTER_HELP: &str = "\
 Lists currently registered agents known to the gateway control plane.
 
 Examples:
-  speechmesh-cli devices
-  speechmesh-cli devices --json";
+  speechmesh devices
+  speechmesh devices --json";
 
 const AGENT_AFTER_HELP: &str = "\
 Subcommands:
   status  Show one registered agent, or the agent currently attached to a device id.
 
 Examples:
-  speechmesh-cli agent status --agent-id mac03-speaker-agent
-  speechmesh-cli agent status --device mac03 --json";
+  speechmesh agent status --agent-id mac03-speaker-agent
+  speechmesh agent status --device mac03 --json";
 
 const TTS_AFTER_HELP: &str = "\
 Subcommands:
@@ -83,64 +85,70 @@ Subcommands:
   play    Stream audio directly to the local speaker through ffplay.
 
 Examples:
-  speechmesh-cli tts voices --provider minimax.tts --json
-  speechmesh-cli tts play --provider minimax.tts --text \"你好\"
-  speechmesh-cli tts stream --provider minimax.tts --stdin > out.mp3";
+  speechmesh tts voices --provider minimax.tts --json
+  speechmesh tts play --provider minimax.tts --text \"你好\"
+  speechmesh tts stream --provider minimax.tts --stdin > out.mp3";
 
 const ASR_AFTER_HELP: &str = "\
 Subcommands:
   transcribe  Send PCM or encoded audio and print the recognized text.
 
 Examples:
-  speechmesh-cli asr transcribe --provider mock.asr --stdin < audio.pcm
-  speechmesh-cli asr transcribe --file sample.wav --encoding wav";
+  speechmesh asr transcribe --provider mock.asr --stdin < audio.pcm
+  speechmesh asr transcribe --file sample.wav --encoding wav";
 
 const TTS_VOICES_AFTER_HELP: &str = "\
 Examples:
-  speechmesh-cli tts voices --provider minimax.tts
-  speechmesh-cli tts voices --provider minimax.tts --language zh-CN --json";
+  speechmesh tts voices --provider minimax.tts
+  speechmesh tts voices --provider minimax.tts --language zh-CN --json";
 
 const TTS_STREAM_AFTER_HELP: &str = "\
 Writes audio bytes to stdout.
 
 Examples:
-  speechmesh-cli tts stream --provider minimax.tts --text \"Hello\" > out.mp3
-  echo \"Hello\" | speechmesh-cli tts stream --provider minimax.tts --stdin | ffplay -nodisp -autoexit -i pipe:0";
+  speechmesh tts stream --provider minimax.tts --text \"Hello\" > out.mp3
+  echo \"Hello\" | speechmesh tts stream --provider minimax.tts --stdin | ffplay -nodisp -autoexit -i pipe:0";
 
 const TTS_PLAY_AFTER_HELP: &str = "\
 Streams audio directly to the local speaker using ffplay.
 
 Examples:
-  speechmesh-cli tts play --provider minimax.tts --text \"Hello from SpeechMesh\"
-  cat line.txt | speechmesh-cli tts play --provider minimax.tts --stdin
+  speechmesh tts play --provider minimax.tts --text \"Hello from SpeechMesh\"
+  cat line.txt | speechmesh tts play --provider minimax.tts --stdin
 
 Requirement:
-  - `ffplay` must be installed and available on PATH.";
+  - `ffplay` must be installed and available on PATH.
+
+Voice selection:
+  - `--voice-profile` selects a named voice profile from config.
+  - When omitted, `speechmesh` can auto-select a voice profile by longest matching `project_voice_profiles.*.root` prefix of the current working directory.";
 
 const SAY_AFTER_HELP: &str = "\
 Synthesizes text through the gateway and routes playback to a target device agent.
 
 Examples:
-  speechmesh-cli say --device mac01 --text \"你好，这里是 SpeechMesh\"
-  speechmesh-cli say --text \"如果配置了默认设备，这里可以省略 --device\"
-  speechmesh-cli say --device mac02 --provider minimax.tts --voice female-shaonv --text-file note.txt
+  speechmesh say --device mac01 --text \"你好，这里是 SpeechMesh\"
+  speechmesh say --device mac01:airpod --text \"切到耳机播放\"
+  speechmesh say --text \"如果配置了默认设备，这里可以省略 --device\"
+  speechmesh say --device mac02 --provider minimax.tts --voice female-shaonv --text-file note.txt
 
 Notes:
   - `say` connects to `--url` for `/ws` TTS, then derives a matching `/control` websocket.
   - Most options can be omitted when matching values are set under `profiles.<name>.defaults` in `~/.speechmesh/config.yml`.
-  - The target machine must have a connected `speechmesh-agent` with `speaker` capability.";
+  - `--voice-profile` overrides project-path voice auto mapping; explicit `--provider`, `--voice`, `--language`, `--rate`, `--pitch`, and `--volume` still take priority.
+  - The target machine must have a connected `speechmesh agent run` process with `speaker` capability.";
 
 const ASR_TRANSCRIBE_AFTER_HELP: &str = "\
 Examples:
-  speechmesh-cli asr transcribe --provider mock.asr --stdin < audio.pcm
-  speechmesh-cli asr transcribe --file sample.wav --encoding wav
+  speechmesh asr transcribe --provider mock.asr --stdin < audio.pcm
+  speechmesh asr transcribe --file sample.wav --encoding wav
 
 Input:
   - Use `--file` for a local audio file.
   - Use `--stdin` to read bytes from a pipe or redirected file.";
 
 #[derive(Parser, Debug)]
-#[command(name = "speechmesh-cli")]
+#[command(name = "speechmesh")]
 #[command(about = "Unified SpeechMesh client for TTS, ASR, and discovery")]
 #[command(
     long_about = "Unified SpeechMesh client for discovery, text-to-speech, and speech-to-text over the stable `/ws` protocol."
@@ -156,7 +164,7 @@ struct Cli {
     #[arg(
         long,
         global = true,
-        help = "Client name sent during the hello handshake; falls back to config file or speechmesh-cli"
+        help = "Client name sent during the hello handshake; falls back to config file or speechmesh"
     )]
     client_name: Option<String>,
     #[arg(
@@ -262,7 +270,11 @@ struct AgentCommand {
 struct AgentStatusArgs {
     #[arg(long, conflicts_with = "device", help = "Lookup by exact agent id")]
     agent_id: Option<String>,
-    #[arg(long, conflicts_with = "agent_id", help = "Lookup the agent currently attached to this device id")]
+    #[arg(
+        long,
+        conflicts_with = "agent_id",
+        help = "Lookup the agent currently attached to this device id"
+    )]
     device: Option<String>,
 }
 
@@ -317,6 +329,11 @@ struct TtsRunArgs {
     provider: ProviderArgs,
     #[command(flatten)]
     input: TextInputArgs,
+    #[arg(
+        long,
+        help = "Named voice profile from config; overrides project-path auto mapping"
+    )]
+    voice_profile: Option<String>,
     #[arg(long, help = "Voice id to request from the provider")]
     voice: Option<String>,
     #[arg(long, help = "Language hint for the provider")]
@@ -342,7 +359,7 @@ struct SayArgs {
     #[arg(
         long,
         conflicts_with = "agent_id",
-        help = "Target device id (for example: mac01); falls back to profiles.<name>.defaults.device"
+        help = "Target device id or host:output target (for example: mac01 or mac01:airpod); falls back to profiles.<name>.defaults.device"
     )]
     device: Option<String>,
     #[arg(long, conflicts_with = "device", help = "Target agent id")]
@@ -451,41 +468,59 @@ enum AudioEncodingArg {
     Wav,
 }
 
-#[tokio::main]
-async fn main() {
-    if let Err(error) = run().await {
+#[allow(dead_code)]
+fn main() {
+    if let Err(error) = run_with_args(std::env::args_os()) {
         eprintln!("error: {error:#}");
         std::process::exit(1);
     }
 }
 
-async fn run() -> Result<()> {
-    let cli = Cli::parse();
-    let config = load_cli_config(cli.config.as_deref())?;
-    let profile = resolve_profile(config.as_ref(), cli.profile.as_deref());
-    let runtime = RuntimeConfig {
-        url: cli
-            .url
-            .or_else(|| profile.and_then(|p| p.gateway.ws_url.clone()))
-            .unwrap_or_else(|| "ws://127.0.0.1:8765/ws".to_string()),
-        control_url: profile.and_then(|p| p.gateway.control_url.clone()),
-        defaults: profile.map(|p| p.defaults.clone()).unwrap_or_default(),
-        client_name: cli
-            .client_name
-            .or_else(|| profile.and_then(|p| p.client_name.clone()))
-            .unwrap_or_else(|| "speechmesh-cli".to_string()),
-        json: cli.json,
-        jsonl: cli.jsonl,
-    };
-    match cli.command {
-        TopCommand::Discover(command) => run_discover(&runtime, command).await,
-        TopCommand::Doctor(args) => run_doctor(&runtime, args).await,
-        TopCommand::Devices(args) => run_devices(&runtime, args).await,
-        TopCommand::Agent(command) => run_agent(&runtime, command).await,
-        TopCommand::Say(args) => run_say(&runtime, args).await,
-        TopCommand::Tts(command) => run_tts(&runtime, command).await,
-        TopCommand::Asr(command) => run_asr(&runtime, command).await,
-    }
+pub fn run_with_args<I, T>(args: I) -> Result<()>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let cli = Cli::parse_from(args);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to initialize tokio runtime")?;
+    runtime.block_on(async move {
+        let config = load_cli_config(cli.config.as_deref())?;
+        let profile = resolve_profile(config.as_ref(), cli.profile.as_deref());
+        let runtime = RuntimeConfig {
+            url: cli
+                .url
+                .or_else(|| profile.and_then(|p| p.gateway.ws_url.clone()))
+                .unwrap_or_else(|| "ws://127.0.0.1:8765/ws".to_string()),
+            control_url: profile.and_then(|p| p.gateway.control_url.clone()),
+            defaults: profile.map(|p| p.defaults.clone()).unwrap_or_default(),
+            voice_profiles: config
+                .as_ref()
+                .map(|cfg| cfg.voice_profiles.clone())
+                .unwrap_or_default(),
+            project_voice_profiles: config
+                .as_ref()
+                .map(|cfg| cfg.project_voice_profiles.clone())
+                .unwrap_or_default(),
+            client_name: cli
+                .client_name
+                .or_else(|| profile.and_then(|p| p.client_name.clone()))
+                .unwrap_or_else(|| "speechmesh".to_string()),
+            json: cli.json,
+            jsonl: cli.jsonl,
+        };
+        match cli.command {
+            TopCommand::Discover(command) => run_discover(&runtime, command).await,
+            TopCommand::Doctor(args) => run_doctor(&runtime, args).await,
+            TopCommand::Devices(args) => run_devices(&runtime, args).await,
+            TopCommand::Agent(command) => run_agent(&runtime, command).await,
+            TopCommand::Say(args) => run_say(&runtime, args).await,
+            TopCommand::Tts(command) => run_tts(&runtime, command).await,
+            TopCommand::Asr(command) => run_asr(&runtime, command).await,
+        }
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -493,6 +528,8 @@ struct RuntimeConfig {
     url: String,
     control_url: Option<String>,
     defaults: DefaultsConfig,
+    voice_profiles: HashMap<String, VoiceProfileConfig>,
+    project_voice_profiles: HashMap<String, ProjectVoiceBinding>,
     client_name: String,
     json: bool,
     jsonl: bool,
@@ -513,6 +550,12 @@ struct DoctorReport {
 struct DoctorPlaybackTarget {
     device: Option<String>,
     agent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlaybackTarget {
+    device_id: String,
+    output_target: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -574,7 +617,6 @@ struct DoctorPlaybackPayload {
     chunk_count: u64,
     total_bytes: u64,
 }
-
 
 async fn run_discover(cli: &RuntimeConfig, command: DiscoverCommand) -> Result<()> {
     match command.command {
@@ -654,16 +696,13 @@ async fn run_doctor(cli: &RuntimeConfig, args: DoctorArgs) -> Result<()> {
 }
 
 async fn run_devices(cli: &RuntimeConfig, _args: DevicesArgs) -> Result<()> {
-    let payload: ControlDevicesListPayload = request_control(
-        cli,
-        ControlRequest::DevicesList,
-        |message| match message {
+    let payload: ControlDevicesListPayload =
+        request_control(cli, ControlRequest::DevicesList, |message| match message {
             ControlResponse::DevicesList { payload } => Some(payload),
             _ => None,
-        },
-    )
-    .await
-    .map_err(|error| annotate_control_capability_error(error, "devices.list"))?;
+        })
+        .await
+        .map_err(|error| annotate_control_capability_error(error, "devices.list"))?;
 
     if cli.json {
         print_serialized(&payload.agents)?;
@@ -825,11 +864,19 @@ async fn check_playback_route(
         .clone()
         .or_else(|| cli.control_url.clone())
         .unwrap_or_else(|| derive_control_url(&cli.url));
+    let parsed_target = target
+        .device
+        .as_deref()
+        .map(parse_playback_target)
+        .transpose()?;
     let accepted = send_play_audio(
         &control_url,
         ControlPlayAudioPayload {
             task_id: Some("doctor-playback".to_string()),
-            device_id: target.device.clone(),
+            device_id: parsed_target
+                .as_ref()
+                .map(|target| target.device_id.clone()),
+            output_target: parsed_target.and_then(|target| target.output_target),
             agent_id: target.agent_id.clone(),
             format: Some(AudioFormat {
                 encoding: AudioEncoding::Wav,
@@ -981,7 +1028,10 @@ fn print_agent(agent: &AgentSnapshot) {
     println!("agent_id: {}", agent.agent_id);
     println!("agent_name: {}", agent.agent_name);
     println!("agent_kind: {}", agent.agent_kind);
-    println!("provider_id: {}", agent.provider_id.as_deref().unwrap_or("-"));
+    println!(
+        "provider_id: {}",
+        agent.provider_id.as_deref().unwrap_or("-")
+    );
     println!(
         "device_id: {}",
         agent
@@ -1076,6 +1126,31 @@ fn print_detail(label: &str, detail: Option<&str>) {
     }
 }
 
+fn parse_playback_target(raw: &str) -> Result<PlaybackTarget> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("playback target cannot be empty");
+    }
+    let Some((device_id, output_target)) = trimmed.split_once(':') else {
+        return Ok(PlaybackTarget {
+            device_id: trimmed.to_string(),
+            output_target: None,
+        });
+    };
+    let device_id = device_id.trim();
+    let output_target = output_target.trim();
+    if device_id.is_empty() {
+        bail!("playback target host is empty in {trimmed:?}");
+    }
+    if output_target.is_empty() {
+        bail!("playback target output is empty in {trimmed:?}");
+    }
+    Ok(PlaybackTarget {
+        device_id: device_id.to_string(),
+        output_target: Some(output_target.to_string()),
+    })
+}
+
 async fn run_say(cli: &RuntimeConfig, args: SayArgs) -> Result<()> {
     let target_device = args.device.clone().or_else(|| cli.defaults.device.clone());
     if target_device.is_none() && args.agent_id.is_none() {
@@ -1087,7 +1162,9 @@ async fn run_say(cli: &RuntimeConfig, args: SayArgs) -> Result<()> {
         bail!("TTS input is empty");
     }
 
-    let request = build_tts_request(cli, &args.tts);
+    // Remote playback does not require live audio chunk delivery. Buffered TTS
+    // avoids the MiniMax streaming websocket path and is more robust here.
+    let request = build_tts_request_with_stream(cli, &args.tts, false)?;
     let synthesized = synthesize_tts(cli, request, text).await?;
     let control_url = args
         .control_url
@@ -1099,11 +1176,18 @@ async fn run_say(cli: &RuntimeConfig, args: SayArgs) -> Result<()> {
         .or(cli.defaults.chunk_size_bytes)
         .unwrap_or(16 * 1024)
         .max(1);
+    let parsed_target = target_device
+        .as_deref()
+        .map(parse_playback_target)
+        .transpose()?;
     let accepted = send_play_audio(
         &control_url,
         ControlPlayAudioPayload {
             task_id: None,
-            device_id: target_device,
+            device_id: parsed_target
+                .as_ref()
+                .map(|target| target.device_id.clone()),
+            output_target: parsed_target.and_then(|target| target.output_target),
             agent_id: args.agent_id,
             format: synthesized.format,
             audio_base64: BASE64.encode(&synthesized.audio),
@@ -1146,9 +1230,19 @@ fn provider_selector(args: ProviderArgs) -> ProviderSelector {
 }
 
 fn merge_provider_args(cli: &RuntimeConfig, args: ProviderArgs) -> ProviderArgs {
+    merge_provider_args_with_voice_profile(cli, args, None)
+}
+
+fn merge_provider_args_with_voice_profile(
+    cli: &RuntimeConfig,
+    args: ProviderArgs,
+    voice_profile: Option<&VoiceProfileConfig>,
+) -> ProviderArgs {
     let mut merged = args;
     if merged.provider.is_none() {
-        merged.provider = cli.defaults.provider.clone();
+        merged.provider = voice_profile
+            .and_then(|profile| profile.provider.clone())
+            .or_else(|| cli.defaults.provider.clone());
     }
     if merged.required_capabilities.is_empty() {
         merged.required_capabilities = cli.defaults.require.clone();
@@ -1178,24 +1272,51 @@ fn output_audio_format(cli: &RuntimeConfig, args: &TtsRunArgs) -> AudioFormat {
     }
 }
 
-fn build_tts_request(cli: &RuntimeConfig, args: &TtsRunArgs) -> TtsStreamRequest {
-    TtsStreamRequest {
-        provider: provider_selector(merge_provider_args(cli, args.provider.clone())),
+fn build_tts_request_with_stream(
+    cli: &RuntimeConfig,
+    args: &TtsRunArgs,
+    stream: bool,
+) -> Result<TtsStreamRequest> {
+    let voice_profile = select_voice_profile(cli, args.voice_profile.as_deref())?;
+    Ok(TtsStreamRequest {
+        provider: provider_selector(merge_provider_args_with_voice_profile(
+            cli,
+            args.provider.clone(),
+            voice_profile,
+        )),
         input_kind: SynthesisInputKind::Text,
         output_format: Some(output_audio_format(cli, args)),
         options: SynthesisOptions {
             language: args
                 .language
                 .clone()
+                .or_else(|| voice_profile.and_then(|profile| profile.language.clone()))
                 .or_else(|| cli.defaults.language.clone()),
-            voice: args.voice.clone().or_else(|| cli.defaults.voice.clone()),
-            stream: true,
-            rate: args.rate.or(cli.defaults.rate),
-            pitch: args.pitch.or(cli.defaults.pitch),
-            volume: args.volume.or(cli.defaults.volume),
+            voice: args
+                .voice
+                .clone()
+                .or_else(|| voice_profile.and_then(|profile| profile.voice.clone()))
+                .or_else(|| cli.defaults.voice.clone()),
+            stream,
+            rate: args
+                .rate
+                .or_else(|| voice_profile.and_then(|profile| profile.rate))
+                .or(cli.defaults.rate),
+            pitch: args
+                .pitch
+                .or_else(|| voice_profile.and_then(|profile| profile.pitch))
+                .or(cli.defaults.pitch),
+            volume: args
+                .volume
+                .or_else(|| voice_profile.and_then(|profile| profile.volume))
+                .or(cli.defaults.volume),
             ..SynthesisOptions::default()
         },
-    }
+    })
+}
+
+fn build_tts_request(cli: &RuntimeConfig, args: &TtsRunArgs) -> Result<TtsStreamRequest> {
+    build_tts_request_with_stream(cli, args, true)
 }
 
 async fn load_text_input(args: &TextInputArgs) -> Result<String> {
@@ -1243,7 +1364,7 @@ async fn run_tts_stream(cli: &RuntimeConfig, args: TtsRunArgs, mut sink: OutputS
         bail!("TTS input is empty")
     }
 
-    let request = build_tts_request(cli, &args);
+    let request = build_tts_request(cli, &args)?;
     stream_tts_to_sink(cli, request, text, &mut sink).await?;
 
     sink.finish().await?;
@@ -1537,11 +1658,12 @@ struct SynthesizedAudio {
     format: Option<AudioFormat>,
 }
 
-
 #[derive(Debug, Clone, Default)]
 struct FileConfig {
     active_profile: Option<String>,
     profiles: HashMap<String, ProfileConfig>,
+    voice_profiles: HashMap<String, VoiceProfileConfig>,
+    project_voice_profiles: HashMap<String, ProjectVoiceBinding>,
     default_profile: ProfileConfig,
 }
 
@@ -1582,6 +1704,22 @@ struct DefaultsConfig {
     asr_punctuation: Option<bool>,
     asr_timestamps: Option<bool>,
     asr_hints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct VoiceProfileConfig {
+    provider: Option<String>,
+    voice: Option<String>,
+    language: Option<String>,
+    rate: Option<f32>,
+    pitch: Option<f32>,
+    volume: Option<f32>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ProjectVoiceBinding {
+    root: Option<PathBuf>,
+    voice_profile: Option<String>,
 }
 
 fn load_cli_config(explicit_path: Option<&std::path::Path>) -> Result<Option<FileConfig>> {
@@ -1665,7 +1803,11 @@ fn config_path(explicit_path: Option<&std::path::Path>) -> Result<Option<PathBuf
 fn parse_file_config(raw: &str) -> Result<FileConfig> {
     let mut config = FileConfig::default();
     let mut current_profile: Option<String> = None;
+    let mut current_voice_profile: Option<String> = None;
+    let mut current_project_binding: Option<String> = None;
     let mut in_profiles = false;
+    let mut in_voice_profiles = false;
+    let mut in_project_voice_profiles = false;
     let mut in_gateway = false;
     let mut in_defaults = false;
 
@@ -1680,13 +1822,31 @@ fn parse_file_config(raw: &str) -> Result<FileConfig> {
         match indent {
             0 => {
                 current_profile = None;
+                current_voice_profile = None;
+                current_project_binding = None;
                 in_gateway = false;
                 in_defaults = false;
                 if trimmed == "profiles:" {
                     in_profiles = true;
+                    in_voice_profiles = false;
+                    in_project_voice_profiles = false;
+                    continue;
+                }
+                if trimmed == "voice_profiles:" {
+                    in_profiles = false;
+                    in_voice_profiles = true;
+                    in_project_voice_profiles = false;
+                    continue;
+                }
+                if trimmed == "project_voice_profiles:" {
+                    in_profiles = false;
+                    in_voice_profiles = false;
+                    in_project_voice_profiles = true;
                     continue;
                 }
                 in_profiles = false;
+                in_voice_profiles = false;
+                in_project_voice_profiles = false;
                 if trimmed == "gateway:" {
                     in_gateway = true;
                     continue;
@@ -1707,6 +1867,17 @@ fn parse_file_config(raw: &str) -> Result<FileConfig> {
                 current_profile = Some(name.clone());
                 config.profiles.entry(name).or_default();
                 in_gateway = false;
+                in_defaults = false;
+            }
+            2 if in_voice_profiles && trimmed.ends_with(':') => {
+                let name = trimmed.trim_end_matches(':').trim().to_string();
+                current_voice_profile = Some(name.clone());
+                config.voice_profiles.entry(name).or_default();
+            }
+            2 if in_project_voice_profiles && trimmed.ends_with(':') => {
+                let name = trimmed.trim_end_matches(':').trim().to_string();
+                current_project_binding = Some(name.clone());
+                config.project_voice_profiles.entry(name).or_default();
             }
             2 if !in_profiles && in_gateway => {
                 assign_gateway_value(&mut config.default_profile.gateway, trimmed)?;
@@ -1745,11 +1916,103 @@ fn parse_file_config(raw: &str) -> Result<FileConfig> {
                     .ok_or_else(|| anyhow!("unknown profile while parsing"))?;
                 assign_defaults_value(&mut profile.defaults, trimmed)?;
             }
+            4 if current_voice_profile.is_some() && in_voice_profiles => {
+                let profile = config
+                    .voice_profiles
+                    .get_mut(current_voice_profile.as_deref().unwrap_or_default())
+                    .ok_or_else(|| anyhow!("unknown voice profile while parsing"))?;
+                assign_voice_profile_value(profile, trimmed)?;
+            }
+            4 if current_project_binding.is_some() && in_project_voice_profiles => {
+                let binding = config
+                    .project_voice_profiles
+                    .get_mut(current_project_binding.as_deref().unwrap_or_default())
+                    .ok_or_else(|| anyhow!("unknown project voice binding while parsing"))?;
+                assign_project_voice_binding_value(binding, trimmed)?;
+            }
             _ => {}
         }
     }
 
     Ok(config)
+}
+
+fn assign_voice_profile_value(profile: &mut VoiceProfileConfig, trimmed: &str) -> Result<()> {
+    let Some((key, value)) = split_key_value(trimmed) else {
+        return Ok(());
+    };
+    match key {
+        "provider" => profile.provider = Some(value.to_string()),
+        "voice" => profile.voice = Some(value.to_string()),
+        "language" => profile.language = Some(value.to_string()),
+        "rate" => profile.rate = Some(parse_number(value, key)?),
+        "pitch" => profile.pitch = Some(parse_number(value, key)?),
+        "volume" => profile.volume = Some(parse_number(value, key)?),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn assign_project_voice_binding_value(
+    binding: &mut ProjectVoiceBinding,
+    trimmed: &str,
+) -> Result<()> {
+    let Some((key, value)) = split_key_value(trimmed) else {
+        return Ok(());
+    };
+    match key {
+        "root" => binding.root = Some(PathBuf::from(value)),
+        "voice_profile" => binding.voice_profile = Some(value.to_string()),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn select_voice_profile<'a>(
+    cli: &'a RuntimeConfig,
+    selected: Option<&str>,
+) -> Result<Option<&'a VoiceProfileConfig>> {
+    if let Some(name) = selected {
+        let profile = cli
+            .voice_profiles
+            .get(name)
+            .ok_or_else(|| anyhow!("unknown voice profile: {name}"))?;
+        return Ok(Some(profile));
+    }
+    let cwd = match std::env::current_dir() {
+        Ok(path) => path,
+        Err(_) => return Ok(None),
+    };
+    Ok(select_voice_profile_for_path(cli, &cwd))
+}
+
+fn select_voice_profile_for_path<'a>(
+    cli: &'a RuntimeConfig,
+    cwd: &Path,
+) -> Option<&'a VoiceProfileConfig> {
+    let cwd = canonicalize_if_exists(cwd);
+    cli.project_voice_profiles
+        .values()
+        .filter_map(|binding| {
+            let root = binding.root.as_ref()?;
+            let profile_name = binding.voice_profile.as_ref()?;
+            let root = canonicalize_if_exists(root);
+            if !path_has_prefix(&cwd, &root) {
+                return None;
+            }
+            let profile = cli.voice_profiles.get(profile_name)?;
+            Some((root.components().count(), profile))
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, profile)| profile)
+}
+
+fn canonicalize_if_exists(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn path_has_prefix(path: &Path, prefix: &Path) -> bool {
+    path.starts_with(prefix)
 }
 
 fn assign_profile_value(profile: &mut ProfileConfig, trimmed: &str) -> Result<()> {
@@ -1914,11 +2177,7 @@ where
     request_control_to_url(&control_url, request, extractor).await
 }
 
-async fn request_control_to_url<T, F>(
-    url: &str,
-    request: ControlRequest,
-    extractor: F,
-) -> Result<T>
+async fn request_control_to_url<T, F>(url: &str, request: ControlRequest, extractor: F) -> Result<T>
 where
     F: Fn(ControlResponse) -> Option<T>,
 {
@@ -1993,5 +2252,154 @@ impl From<AudioEncodingArg> for AudioEncoding {
             AudioEncodingArg::Flac => AudioEncoding::Flac,
             AudioEncodingArg::Wav => AudioEncoding::Wav,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn runtime_with_voice_profiles() -> RuntimeConfig {
+        let mut voice_profiles = HashMap::new();
+        voice_profiles.insert(
+            "repo".to_string(),
+            VoiceProfileConfig {
+                provider: Some("minimax.tts".to_string()),
+                voice: Some("repo-voice".to_string()),
+                language: Some("zh-CN".to_string()),
+                rate: Some(1.05),
+                pitch: Some(0.95),
+                volume: Some(1.1),
+            },
+        );
+        voice_profiles.insert(
+            "nested".to_string(),
+            VoiceProfileConfig {
+                provider: Some("minimax.tts".to_string()),
+                voice: Some("nested-voice".to_string()),
+                language: Some("en-US".to_string()),
+                rate: Some(1.2),
+                pitch: None,
+                volume: None,
+            },
+        );
+
+        let mut project_voice_profiles = HashMap::new();
+        project_voice_profiles.insert(
+            "repo".to_string(),
+            ProjectVoiceBinding {
+                root: Some(PathBuf::from("/tmp/work")),
+                voice_profile: Some("repo".to_string()),
+            },
+        );
+        project_voice_profiles.insert(
+            "nested".to_string(),
+            ProjectVoiceBinding {
+                root: Some(PathBuf::from("/tmp/work/nested")),
+                voice_profile: Some("nested".to_string()),
+            },
+        );
+
+        RuntimeConfig {
+            url: "ws://127.0.0.1:8765/ws".to_string(),
+            control_url: None,
+            defaults: DefaultsConfig {
+                provider: Some("default.tts".to_string()),
+                voice: Some("default-voice".to_string()),
+                language: Some("ja-JP".to_string()),
+                rate: Some(0.9),
+                pitch: Some(0.8),
+                volume: Some(0.7),
+                ..DefaultsConfig::default()
+            },
+            voice_profiles,
+            project_voice_profiles,
+            client_name: "speechmesh".to_string(),
+            json: false,
+            jsonl: false,
+        }
+    }
+
+    #[test]
+    fn parse_file_config_reads_voice_profile_sections() {
+        let parsed = parse_file_config(
+            r#"
+voice_profiles:
+  codex:
+    provider: minimax.tts
+    voice: female-shaonv
+    language: zh-CN
+    rate: 1.1
+
+project_voice_profiles:
+  speechmesh:
+    root: /Users/breaker/src/speechmesh
+    voice_profile: codex
+"#,
+        )
+        .expect("config should parse");
+
+        let profile = parsed
+            .voice_profiles
+            .get("codex")
+            .expect("voice profile should exist");
+        assert_eq!(profile.provider.as_deref(), Some("minimax.tts"));
+        assert_eq!(profile.voice.as_deref(), Some("female-shaonv"));
+        assert_eq!(profile.language.as_deref(), Some("zh-CN"));
+        assert_eq!(profile.rate, Some(1.1));
+
+        let binding = parsed
+            .project_voice_profiles
+            .get("speechmesh")
+            .expect("project binding should exist");
+        assert_eq!(
+            binding.root.as_deref(),
+            Some(Path::new("/Users/breaker/src/speechmesh"))
+        );
+        assert_eq!(binding.voice_profile.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn select_voice_profile_uses_longest_matching_root_prefix() {
+        let runtime = runtime_with_voice_profiles();
+        let selected = select_voice_profile_for_path(&runtime, Path::new("/tmp/work/nested/app"))
+            .expect("voice profile should be selected");
+        assert_eq!(selected.voice.as_deref(), Some("nested-voice"));
+    }
+
+    #[test]
+    fn explicit_flags_override_voice_profile_values() {
+        let runtime = runtime_with_voice_profiles();
+        let args = TtsRunArgs {
+            provider: ProviderArgs {
+                provider: Some("cli.tts".to_string()),
+                required_capabilities: Vec::new(),
+                preferred_capabilities: Vec::new(),
+            },
+            input: TextInputArgs {
+                text: Some("hello".to_string()),
+                text_file: None,
+                stdin: false,
+            },
+            voice_profile: Some("repo".to_string()),
+            voice: Some("cli-voice".to_string()),
+            language: Some("en-GB".to_string()),
+            rate: Some(1.3),
+            pitch: Some(1.4),
+            volume: Some(1.5),
+            format: None,
+            sample_rate: None,
+            channels: None,
+        };
+
+        let request =
+            build_tts_request_with_stream(&runtime, &args, false).expect("request should build");
+        assert_eq!(request.provider.provider_id.as_deref(), Some("cli.tts"));
+        assert_eq!(request.options.voice.as_deref(), Some("cli-voice"));
+        assert_eq!(request.options.language.as_deref(), Some("en-GB"));
+        assert_eq!(request.options.rate, Some(1.3));
+        assert_eq!(request.options.pitch, Some(1.4));
+        assert_eq!(request.options.volume, Some(1.5));
+        assert!(!request.options.stream);
     }
 }

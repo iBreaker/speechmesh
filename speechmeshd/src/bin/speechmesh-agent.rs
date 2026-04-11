@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::time::Duration;
 use std::{collections::HashMap, env, fs, path::PathBuf};
 
@@ -11,9 +12,9 @@ mod runtime;
 
 const CLI_AFTER_HELP: &str = "\
 Examples:
-  speechmesh-agent run --agent-id mac01-agent --device-id mac01
-  speechmesh-agent --config ~/.speechmesh/config.yml run --agent-id mac01-agent --device-id mac01
-  speechmesh-agent run --gateway-url ws://127.0.0.1:8765/agent --shared-secret secret
+  speechmesh agent run --agent-id mac01-agent --device-id mac01
+  speechmesh agent --config ~/.speechmesh/config.yml run --agent-id mac01-agent --device-id mac01
+  speechmesh agent run --gateway-url ws://127.0.0.1:8765/agent --shared-secret secret
 
 Notes:
   - This process is a lightweight, long-running device agent.
@@ -23,8 +24,8 @@ Notes:
 
 const RUN_AFTER_HELP: &str = "\
 Examples:
-  speechmesh-agent run --gateway-url ws://127.0.0.1:8765/agent --agent-id mac01-agent --device-id mac01
-  speechmesh-agent run --shared-secret secret --capability speaker
+  speechmesh agent run --gateway-url ws://127.0.0.1:8765/agent --agent-id mac01-agent --device-id mac01
+  speechmesh agent run --shared-secret secret --capability speaker
 
 Behavior:
   - This command is long-running and automatically reconnects on disconnect.
@@ -32,7 +33,7 @@ Behavior:
   - Local playback follows system default output (no fixed headset/speaker binding).";
 
 #[derive(Debug, Parser)]
-#[command(name = "speechmesh-agent")]
+#[command(name = "speechmesh agent")]
 #[command(about = "SpeechMesh generic device-side agent")]
 #[command(after_help = CLI_AFTER_HELP)]
 struct Cli {
@@ -69,7 +70,7 @@ struct RunArgs {
     gateway_url: Option<String>,
     #[arg(
         long,
-        default_value = "speechmesh-agent-1",
+        default_value = "device-agent-1",
         help = "Stable unique id for this agent process"
     )]
     agent_id: String,
@@ -108,35 +109,49 @@ enum AgentCapability {
     Speaker,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+#[allow(dead_code)]
+fn main() -> Result<()> {
+    run_with_args(std::env::args_os())
+}
+
+pub fn run_with_args<I, T>(args: I) -> Result<()>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
     init_rustls();
     init_tracing();
 
-    let cli = Cli::parse();
-    let config = load_agent_config(cli.config.as_deref())?;
-    let profile = resolve_profile(config.as_ref(), cli.profile.as_deref());
-    match cli.command {
-        Commands::Run(args) => {
-            let config = runtime::AgentRuntimeConfig {
-                gateway_url: args
-                    .gateway_url
-                    .or_else(|| profile.and_then(|p| p.gateway.agent_url.clone()))
-                    .or_else(|| profile.and_then(|p| p.gateway.ws_url.clone()))
-                    .unwrap_or_else(|| "ws://127.0.0.1:8765/agent".to_string()),
-                agent_id: args.agent_id,
-                agent_name: args.agent_name,
-                device_id: args.device_id,
-                provider_id: args.provider_id,
-                shared_secret: args
-                    .shared_secret
-                    .or_else(|| profile.and_then(|p| p.shared_secret.clone())),
-                capabilities: capabilities_for(args.capability),
-                reconnect_delay: Duration::from_secs(args.reconnect_delay_secs),
-            };
-            runtime::run_forever(config).await
+    let cli = Cli::parse_from(args);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to initialize tokio runtime")?;
+    runtime.block_on(async move {
+        let config = load_agent_config(cli.config.as_deref())?;
+        let profile = resolve_profile(config.as_ref(), cli.profile.as_deref());
+        match cli.command {
+            Commands::Run(args) => {
+                let config = runtime::AgentRuntimeConfig {
+                    gateway_url: args
+                        .gateway_url
+                        .or_else(|| profile.and_then(|p| p.gateway.agent_url.clone()))
+                        .or_else(|| profile.and_then(|p| p.gateway.ws_url.clone()))
+                        .unwrap_or_else(|| "ws://127.0.0.1:8765/agent".to_string()),
+                    agent_id: args.agent_id,
+                    agent_name: args.agent_name,
+                    device_id: args.device_id,
+                    provider_id: args.provider_id,
+                    shared_secret: args
+                        .shared_secret
+                        .or_else(|| profile.and_then(|p| p.shared_secret.clone())),
+                    capabilities: capabilities_for(args.capability),
+                    reconnect_delay: Duration::from_secs(args.reconnect_delay_secs),
+                };
+                runtime::run_forever(config).await
+            }
         }
-    }
+    })
 }
 
 fn capabilities_for(capability: AgentCapability) -> Vec<String> {

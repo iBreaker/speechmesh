@@ -219,6 +219,7 @@ async fn handle_control_play_audio(
         .route_play_audio_start(PlayAudioRouteRequest {
             task_id: task_id.clone(),
             device_id: payload.device_id,
+            output_target: payload.output_target,
             agent_id: payload.agent_id,
             format: payload.format,
         })

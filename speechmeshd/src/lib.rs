@@ -1,4 +1,8 @@
+extern crate self as speechmeshd;
+
 pub mod agent;
+#[path = "bin/speechmesh-agent.rs"]
+pub mod device_agent_app;
 pub mod providers;
 pub mod server;
 

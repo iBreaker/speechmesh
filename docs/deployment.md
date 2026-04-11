@@ -136,7 +136,7 @@ The helper script:
 4. applies `deploy/k8s/speechmesh.yaml` with runtime substitutions
 5. waits for the `apps/speechmesh` rollout
 
-### macOS Agent
+### macOS Apple ASR Agent
 
 The repository includes:
 
@@ -165,6 +165,74 @@ Logs land in:
 
 - `~/Library/Logs/SpeechMesh/apple-agent.log`
 - `~/Library/Logs/SpeechMesh/apple-agent.err.log`
+
+### macOS Device Speaker Agent
+
+The repository includes:
+
+- LaunchAgent plist template: `deploy/macos/io.speechmesh.device-agent.plist`
+- Linux user service template: `deploy/linux/speechmesh-device-agent.service`
+- installer helper: `scripts/install_device_agent_service.sh`
+
+Example:
+
+```bash
+./scripts/install_device_agent_service.sh install \
+  --gateway-url wss://speechmesh.example.com/agent \
+  --agent-id mac01-speaker-agent \
+  --agent-name "Mac 01 Speaker Agent" \
+  --device-id mac01 \
+  --shared-secret change-me
+```
+
+That script:
+
+1. builds the unified client binary `speechmesh` unless `--skip-build` is used
+2. installs it into `~/bin/speechmesh` unless `--skip-install-binary` is used
+3. renders a LaunchAgent plist that runs `speechmesh agent run`
+4. bootstraps the service through `launchctl`
+
+Device speaker agent rollout should use the unified `speechmesh` client binary only.
+
+Logs land in:
+
+- `~/Library/Logs/SpeechMesh/device-agent.log`
+- `~/Library/Logs/SpeechMesh/device-agent.err.log`
+
+### Linux Device Speaker Agent
+
+The same installer helper manages Linux user services through `systemd --user`.
+
+Example:
+
+```bash
+./scripts/install_device_agent_service.sh install \
+  --platform linux \
+  --gateway-url wss://speechmesh.example.com/agent \
+  --agent-id linux01-speaker-agent \
+  --agent-name "Linux 01 Speaker Agent" \
+  --device-id linux01 \
+  --shared-secret change-me
+```
+
+That path:
+
+1. builds and installs `speechmesh` unless `--skip-build` / `--skip-install-binary` is used
+2. renders `~/.config/systemd/user/speechmesh-device-agent.service`
+3. enables and starts the service through `systemctl --user`
+
+Logs land in:
+
+- `~/.local/state/speechmesh/device-agent.log`
+- `~/.local/state/speechmesh/device-agent.err.log`
+
+### Legacy Client Binary Compatibility
+
+`scripts/install_device_agent_service.sh` supports `--legacy-compat` to manage old command names:
+
+- `wrap` (default): install wrapper shims for `speechmesh-agent` and `speechmesh-cli` that forward to `speechmesh`
+- `keep`: do not touch old binaries
+- `remove`: remove old `speechmesh-agent` and `speechmesh-cli` files from the install directory
 
 ## Network Shape
 
