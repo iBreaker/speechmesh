@@ -139,20 +139,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          version="${{ steps.meta.outputs.version }}"
           tag="${{ steps.meta.outputs.tag }}"
-          mapfile -d '' -t release_files < <(
-            find \
-              dist/downloaded/release-linux-x86_64 \
-              dist/downloaded/release-macos-arm64 \
-              -maxdepth 1 \
-              -type f \
-              -print0 \
-            | sort -z
+          release_files=(
+            "dist/downloaded/release-linux-x86_64/speechmesh-${tag}-linux-x86_64"
+            "dist/downloaded/release-linux-x86_64/speechmesh-${tag}-linux-x86_64.sha256"
+            "dist/downloaded/release-linux-x86_64/speechmeshd-${tag}-linux-x86_64"
+            "dist/downloaded/release-linux-x86_64/speechmeshd-${tag}-linux-x86_64.sha256"
+            "dist/downloaded/release-linux-x86_64/speechmesh-${version}-linux-x86_64.tar.gz"
+            "dist/downloaded/release-macos-arm64/speechmesh-${tag}-macos-arm64"
+            "dist/downloaded/release-macos-arm64/speechmesh-${tag}-macos-arm64.sha256"
+            "dist/downloaded/release-macos-arm64/speechmeshd-${tag}-macos-arm64"
+            "dist/downloaded/release-macos-arm64/speechmeshd-${tag}-macos-arm64.sha256"
+            "dist/downloaded/release-macos-arm64/speechmesh-${version}-macos-arm64.tar.gz"
           )
-          if [[ ${#release_files[@]} -eq 0 ]]; then
-            echo "no release files found to upload" >&2
-            exit 1
-          fi
+          declare -A seen_names=()
+          for file in "${release_files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "missing release file: $file" >&2
+              exit 1
+            fi
+            name="$(basename "$file")"
+            if [[ -n "${seen_names[$name]:-}" ]]; then
+              echo "duplicate release asset name resolved: $name" >&2
+              exit 1
+            fi
+            seen_names["$name"]=1
+          done
           printf 'uploading release file: %s\n' "${release_files[@]}"
           gh release upload "$tag" \
             "${release_files[@]}" \
