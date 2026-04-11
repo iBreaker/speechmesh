@@ -42,7 +42,7 @@ Notes:
   - `tts play` requires `ffplay` on the local machine.
   - `tts stream` writes raw audio bytes to stdout and logs status to stderr.
   - All commands connect to a SpeechMesh `/ws` endpoint via `--url`.
-  - `doctor`, `devices`, and `agent status` use the gateway control plane to inspect health and registered agents.";
+  - `doctor`, `devices`, `versions`, and `agent status` use the gateway control plane to inspect health and registered agents.";
 
 const DISCOVER_AFTER_HELP: &str = "\
 Examples:
@@ -69,6 +69,13 @@ Lists currently registered agents known to the gateway control plane.
 Examples:
   speechmesh devices
   speechmesh devices --json";
+
+const VERSIONS_AFTER_HELP: &str = "\
+Summarizes registered agent versions and the latest auto-update state reported by each device agent.
+
+Examples:
+  speechmesh versions
+  speechmesh versions --json";
 
 const AGENT_AFTER_HELP: &str = "\
 Subcommands:
@@ -204,6 +211,8 @@ enum TopCommand {
     Doctor(DoctorArgs),
     #[command(about = "List registered agents and devices", after_help = DEVICES_AFTER_HELP)]
     Devices(DevicesArgs),
+    #[command(about = "Summarize registered client versions", after_help = VERSIONS_AFTER_HELP)]
+    Versions(VersionsArgs),
     #[command(about = "Inspect one agent registered with the gateway", after_help = AGENT_AFTER_HELP)]
     Agent(AgentCommand),
     #[command(about = "Synthesize text and play it on a target device", after_help = SAY_AFTER_HELP)]
@@ -252,6 +261,9 @@ struct DoctorArgs {
 
 #[derive(Args, Debug)]
 struct DevicesArgs {}
+
+#[derive(Args, Debug)]
+struct VersionsArgs {}
 
 #[derive(Subcommand, Debug)]
 enum AgentSubcommand {
@@ -515,6 +527,7 @@ where
             TopCommand::Discover(command) => run_discover(&runtime, command).await,
             TopCommand::Doctor(args) => run_doctor(&runtime, args).await,
             TopCommand::Devices(args) => run_devices(&runtime, args).await,
+            TopCommand::Versions(args) => run_versions(&runtime, args).await,
             TopCommand::Agent(command) => run_agent(&runtime, command).await,
             TopCommand::Say(args) => run_say(&runtime, args).await,
             TopCommand::Tts(command) => run_tts(&runtime, command).await,
@@ -712,6 +725,77 @@ async fn run_devices(cli: &RuntimeConfig, _args: DevicesArgs) -> Result<()> {
         }
     } else {
         print_devices(&payload.agents);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct VersionRow {
+    agent_id: String,
+    agent_name: String,
+    device_id: Option<String>,
+    provider_id: Option<String>,
+    client_version: Option<String>,
+    update_state: Option<String>,
+    update_target_version: Option<String>,
+    update_applied: Option<bool>,
+    restart_performed: Option<bool>,
+    update_error: Option<String>,
+}
+
+async fn run_versions(cli: &RuntimeConfig, _args: VersionsArgs) -> Result<()> {
+    let payload: ControlDevicesListPayload =
+        request_control(cli, ControlRequest::DevicesList, |message| match message {
+            ControlResponse::DevicesList { payload } => Some(payload),
+            _ => None,
+        })
+        .await
+        .map_err(|error| annotate_control_capability_error(error, "devices.list"))?;
+
+    let mut rows = payload
+        .agents
+        .iter()
+        .map(|agent| VersionRow {
+            agent_id: agent.agent_id.clone(),
+            agent_name: agent.agent_name.clone(),
+            device_id: agent.device.as_ref().map(|device| device.device_id.clone()),
+            provider_id: agent.provider_id.clone(),
+            client_version: agent.client_version.clone(),
+            update_state: agent
+                .update_status
+                .as_ref()
+                .and_then(|status| status.state.clone()),
+            update_target_version: agent
+                .update_status
+                .as_ref()
+                .and_then(|status| status.target_version.clone()),
+            update_applied: agent.update_status.as_ref().and_then(|status| status.applied),
+            restart_performed: agent
+                .update_status
+                .as_ref()
+                .and_then(|status| status.restart_performed),
+            update_error: agent
+                .update_status
+                .as_ref()
+                .and_then(|status| status.error.clone()),
+        })
+        .collect::<Vec<_>>();
+
+    rows.sort_by(|left, right| {
+        left.device_id
+            .as_deref()
+            .unwrap_or(left.agent_id.as_str())
+            .cmp(right.device_id.as_deref().unwrap_or(right.agent_id.as_str()))
+    });
+
+    if cli.json {
+        print_serialized(&rows)?;
+    } else if cli.jsonl {
+        for row in &rows {
+            print_jsonl(row)?;
+        }
+    } else {
+        print_versions(&rows);
     }
     Ok(())
 }
@@ -1121,6 +1205,38 @@ fn print_agent_common(agent: &AgentSnapshot) {
         }
         if !summary.is_empty() {
             println!("  update: {}", summary.join(", "));
+        }
+    }
+}
+
+fn print_versions(rows: &[VersionRow]) {
+    if rows.is_empty() {
+        println!("no registered agents");
+        return;
+    }
+    for row in rows {
+        println!(
+            "{} agent={} version={} update={} target={}",
+            row.device_id.as_deref().unwrap_or("-"),
+            row.agent_id,
+            row.client_version.as_deref().unwrap_or("-"),
+            row.update_state.as_deref().unwrap_or("-"),
+            row.update_target_version.as_deref().unwrap_or("-"),
+        );
+        if row.update_applied.is_some()
+            || row.restart_performed.is_some()
+            || row.update_error.is_some()
+        {
+            println!(
+                "  applied={} restarted={} error={}",
+                row.update_applied
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                row.restart_performed
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                row.update_error.as_deref().unwrap_or("-"),
+            );
         }
     }
 }

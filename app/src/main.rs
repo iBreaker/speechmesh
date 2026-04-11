@@ -40,7 +40,7 @@ fn main() {
             std::iter::once(OsString::from("speechmesh auto-update"))
                 .chain(args.into_iter().skip(2)),
         ),
-        Some("agent") => {
+        Some("agent") if should_run_device_agent(&args) => {
             let forwarded = std::iter::once(OsString::from("speechmesh agent"))
                 .chain(args.into_iter().skip(2))
                 .collect::<Vec<_>>();
@@ -69,6 +69,7 @@ Root commands:
   check-update  Resolve the latest available update for this platform/channel
   self-update   Download and replace the current `speechmesh` binary
   auto-update   Run continuous update checks and apply updates automatically
+  versions      Summarize registered agent versions and update state
   say           Synthesize text and route playback to a device agent
   tts           Text-to-speech tools
   asr           Speech-to-text tools
@@ -83,13 +84,19 @@ Examples:
   speechmesh self-update --manifest-url https://example.com/speechmesh.json --dry-run
   speechmesh auto-update --manifest-url https://example.com/speechmesh.json --interval-secs 300
   speechmesh say --device mac01 --text \"你好\"
+  speechmesh versions --json
+  speechmesh agent status --device mac01 --json
   speechmesh agent run --agent-id mac01-speaker-agent --device-id mac01
 
 Notes:
   - Legacy wrapper binaries (`speechmesh-cli`, `speechmesh-agent`) are optional compatibility shims and are only present if installed via `--legacy-compat wrap`.
   - New deployments should call `speechmesh` directly.
-  - Use `speechmesh <command> --help` or `speechmesh agent --help` for full flags."
+  - Use `speechmesh <command> --help`, `speechmesh agent status --help`, or `speechmesh agent run --help` for full flags."
     );
+}
+
+fn should_run_device_agent(args: &[OsString]) -> bool {
+    args.iter().skip(2).any(|arg| arg == "run")
 }
 
 #[derive(Debug, Clone, Serialize)]
