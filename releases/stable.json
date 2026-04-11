@@ -1,0 +1,26 @@
+{
+  "schema": "speechmesh/update-manifest.v1",
+  "default_channel": "stable",
+  "releases": [
+    {
+      "version": "0.1.0",
+      "channel": "stable",
+      "assets": [
+        {
+          "platform": "linux",
+          "arch": "x86_64",
+          "url": "https://github.com/iBreaker/speechmesh/releases/download/v0.1.0/speechmesh-v0.1.0-linux-x86_64",
+          "sha256": "201cad7ecc5e8e055b6d41f18d928d9cad7f077a958b8a841eab0090be941a51",
+          "binary_name": "speechmesh"
+        },
+        {
+          "platform": "macos",
+          "arch": "aarch64",
+          "url": "https://github.com/iBreaker/speechmesh/releases/download/v0.1.0/speechmesh-v0.1.0-macos-arm64",
+          "sha256": "904688ee71b3ef2d954052bf4017424a526941656567a3a0e4d0c3a6dc5e271d",
+          "binary_name": "speechmesh"
+        }
+      ]
+    }
+  ]
+}
