@@ -258,6 +258,42 @@ speechmesh auto-update \
   --status-file ~/.local/state/speechmesh/device-agent-update.json
 ```
 
+For the public GitHub release flow, point clients at the stable raw manifest:
+
+```bash
+speechmesh auto-update \
+  --manifest-url https://raw.githubusercontent.com/iBreaker/speechmesh/main/releases/stable.json \
+  --channel stable \
+  --once
+```
+
+## Public Release And Update Pipeline
+
+The repository now supports a public GitHub-driven release/update path for the unified `speechmesh` client.
+
+- `build-artifacts.yml` builds public artifacts for Linux x86_64 and macOS arm64
+- `release-artifacts.yml` publishes versioned release assets plus `stable.json`
+- `scripts/build_update_manifest.sh` generates the update manifest consumed by `check-update`, `self-update`, and `auto-update`
+- successful release publication writes `releases/stable.json` back to `main`
+
+Current stable manifest URL:
+
+```text
+https://raw.githubusercontent.com/iBreaker/speechmesh/main/releases/stable.json
+```
+
+Recommended operator checks:
+
+```bash
+gh release view v0.1.0 --repo iBreaker/speechmesh
+curl -fsS https://raw.githubusercontent.com/iBreaker/speechmesh/main/releases/stable.json | jq .
+speechmesh check-update \
+  --manifest-url https://raw.githubusercontent.com/iBreaker/speechmesh/main/releases/stable.json \
+  --json
+```
+
+If you are continuing rollout work on another machine, read `docs/release-handoff-2026-04.md` first.
+
 That command emits one JSON status line to stdout and updates the status file so fleet checks can compare current version, target version, and whether an update was applied.
 
 ### Legacy Client Binary Compatibility
