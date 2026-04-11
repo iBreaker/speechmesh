@@ -212,10 +212,10 @@ jobs:
           git checkout main
           mkdir -p releases
           cp "dist/release-manifests/${channel}.json" "releases/${channel}.json"
-          if git diff --quiet -- "releases/${channel}.json"; then
+          git add "releases/${channel}.json"
+          if git diff --cached --quiet -- "releases/${channel}.json"; then
             echo "manifest unchanged"
             exit 0
           fi
-          git add "releases/${channel}.json"
           git commit -m "chore: update ${channel} release manifest for ${{ steps.meta.outputs.tag }}"
           git push origin HEAD:main
