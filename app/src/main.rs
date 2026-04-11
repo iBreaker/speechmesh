@@ -1,7 +1,9 @@
 use std::ffi::OsString;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, ValueEnum};
@@ -34,6 +36,10 @@ fn main() {
             std::iter::once(OsString::from("speechmesh self-update"))
                 .chain(args.into_iter().skip(2)),
         ),
+        Some("auto-update") => run_auto_update_with_args(
+            std::iter::once(OsString::from("speechmesh auto-update"))
+                .chain(args.into_iter().skip(2)),
+        ),
         Some("agent") => {
             let forwarded = std::iter::once(OsString::from("speechmesh agent"))
                 .chain(args.into_iter().skip(2))
@@ -62,6 +68,7 @@ Root commands:
   version       Print the unified client version and binary metadata
   check-update  Resolve the latest available update for this platform/channel
   self-update   Download and replace the current `speechmesh` binary
+  auto-update   Run continuous update checks and apply updates automatically
   say           Synthesize text and route playback to a device agent
   tts           Text-to-speech tools
   asr           Speech-to-text tools
@@ -74,6 +81,7 @@ Examples:
   speechmesh version --json
   speechmesh check-update --manifest-url https://example.com/speechmesh.json
   speechmesh self-update --manifest-url https://example.com/speechmesh.json --dry-run
+  speechmesh auto-update --manifest-url https://example.com/speechmesh.json --interval-secs 300
   speechmesh say --device mac01 --text \"你好\"
   speechmesh agent run --agent-id mac01-speaker-agent --device-id mac01
 
@@ -275,6 +283,27 @@ struct SelfUpdateArgs {
     binary_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Parser, Clone)]
+#[command(name = "speechmesh auto-update")]
+struct AutoUpdateArgs {
+    #[arg(long, help = "Manifest URL describing available releases")]
+    manifest_url: String,
+    #[arg(long, default_value = DEFAULT_CHANNEL, help = "Release channel to resolve")]
+    channel: String,
+    #[arg(long, default_value_t = 300, help = "Polling interval in seconds")]
+    interval_secs: u64,
+    #[arg(long, help = "Run one check/apply cycle and exit")]
+    once: bool,
+    #[arg(long, value_enum, default_value_t = RestartMode::None, help = "Restart a managed service after replacing the binary")]
+    restart_mode: RestartMode,
+    #[arg(long, help = "launchd label or systemd --user service name to restart")]
+    service_name: Option<String>,
+    #[arg(long, help = "Persist the latest auto-update status as JSON")]
+    status_file: Option<PathBuf>,
+    #[arg(long, hide = true)]
+    binary_path: Option<PathBuf>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum UpdateManifestEnvelope {
@@ -349,6 +378,25 @@ struct SelfUpdateReport {
     restart: RestartPlan,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AutoUpdateCycleReport {
+    unix_time_secs: u64,
+    event: String,
+    status: String,
+    current_version: String,
+    target_version: Option<String>,
+    executable: String,
+    manifest_url: String,
+    channel: String,
+    interval_secs: u64,
+    release_url: Option<String>,
+    release_sha256: Option<String>,
+    bytes: Option<usize>,
+    applied: bool,
+    restart_performed: bool,
+    error: Option<String>,
+}
+
 fn run_self_update_with_args<I, T>(args: I) -> Result<()>
 where
     I: IntoIterator<Item = T>,
@@ -360,77 +408,251 @@ where
         .build()
         .context("failed to initialize tokio runtime")?;
     runtime.block_on(async move {
-        let plan = resolve_update_plan(&args).await?;
-        let binary_path = args
-            .binary_path
-            .clone()
-            .unwrap_or(std::env::current_exe().context("failed to resolve current executable")?);
-        let status = compare_versions(APP_VERSION, &plan.release.version);
-        if !args.force {
-            match status {
-                UpdateStatus::UpdateAvailable => {}
-                UpdateStatus::UpToDate => bail!(
-                    "target version {} matches current version {}; pass --force to replace anyway",
-                    plan.release.version,
-                    APP_VERSION
-                ),
-                UpdateStatus::DowngradeAvailable => bail!(
-                    "target version {} is older than current version {}; pass --force to replace anyway",
-                    plan.release.version,
-                    APP_VERSION
-                ),
-                UpdateStatus::VersionUnknown => bail!(
-                    "unable to compare current version {} with target {}; pass --force to replace anyway",
-                    APP_VERSION,
-                    plan.release.version
-                ),
-            }
-        }
-
-        let bytes = download_binary(&plan.release.url).await?;
-        let actual_sha = sha256_hex(&bytes);
-        if !actual_sha.eq_ignore_ascii_case(plan.release.sha256.trim()) {
-            bail!(
-                "sha256 mismatch: expected {}, got {}",
-                plan.release.sha256,
-                actual_sha
-            );
-        }
-
-        let mut restart = RestartPlan {
-            requested_mode: restart_mode_label(args.restart_mode).to_string(),
-            service_name: args.service_name.clone(),
-            performed: false,
-            hint: restart_hint(args.restart_mode, args.service_name.as_deref()),
-        };
-
-        if !args.dry_run {
-            replace_binary(&binary_path, &bytes)?;
-            if args.restart_mode != RestartMode::None {
-                restart_managed_service(args.restart_mode, args.service_name.as_deref())?;
-                restart.performed = true;
-            }
-        }
-
-        let report = SelfUpdateReport {
-            current_version: APP_VERSION.to_string(),
-            target_version: plan.release.version.clone(),
-            status,
-            executable: binary_path.display().to_string(),
-            channel: plan.release.channel.clone(),
-            url: plan.release.url.clone(),
-            sha256: actual_sha,
-            bytes: bytes.len(),
-            dry_run: args.dry_run,
-            applied: !args.dry_run,
-            restart,
-        };
-
+        let report = execute_self_update(&args).await?;
         println!(
             "{}",
             serde_json::to_string_pretty(&report).context("failed to encode update output")?
         );
         Ok(())
+    })
+}
+
+fn run_auto_update_with_args<I, T>(args: I) -> Result<()>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let args = AutoUpdateArgs::parse_from(args);
+    if !args.once && args.interval_secs == 0 {
+        bail!("--interval-secs must be greater than 0 when --once is not set");
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("failed to initialize tokio runtime")?;
+    runtime.block_on(run_auto_update_loop(args))
+}
+
+async fn run_auto_update_loop(args: AutoUpdateArgs) -> Result<()> {
+    loop {
+        let report = run_auto_update_cycle(&args).await;
+        let report_line =
+            serde_json::to_string(&report).context("failed to encode auto-update cycle report")?;
+        println!("{report_line}");
+        std::io::stdout()
+            .flush()
+            .context("failed to flush auto-update report to stdout")?;
+
+        if let Some(path) = args.status_file.as_deref() {
+            if let Err(error) = write_auto_update_state(path, &report) {
+                if args.once {
+                    return Err(error);
+                }
+                eprintln!("warning: failed to write auto-update status file: {error:#}");
+            }
+        }
+
+        if args.once {
+            if let Some(error) = report.error {
+                bail!("auto-update --once failed: {error}");
+            }
+            return Ok(());
+        }
+
+        // After replacing the binary, exit so process supervisors can restart from the new binary.
+        if report.applied {
+            return Ok(());
+        }
+
+        tokio::time::sleep(Duration::from_secs(args.interval_secs)).await;
+    }
+}
+
+async fn run_auto_update_cycle(args: &AutoUpdateArgs) -> AutoUpdateCycleReport {
+    let executable = args
+        .binary_path
+        .clone()
+        .unwrap_or_else(|| {
+            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("speechmesh"))
+        })
+        .display()
+        .to_string();
+
+    let mut report = AutoUpdateCycleReport {
+        unix_time_secs: now_unix_time_secs(),
+        event: "check_failed".to_string(),
+        status: "error".to_string(),
+        current_version: APP_VERSION.to_string(),
+        target_version: None,
+        executable,
+        manifest_url: args.manifest_url.clone(),
+        channel: args.channel.clone(),
+        interval_secs: args.interval_secs,
+        release_url: None,
+        release_sha256: None,
+        bytes: None,
+        applied: false,
+        restart_performed: false,
+        error: None,
+    };
+
+    let target = current_target();
+    match resolve_manifest_release(&args.manifest_url, &args.channel, &target).await {
+        Ok(release) => {
+            let status = compare_versions(APP_VERSION, &release.version);
+            report.status = update_status_label(status).to_string();
+            report.target_version = Some(release.version.clone());
+            report.release_url = Some(release.url.clone());
+            report.release_sha256 = Some(release.sha256.clone());
+
+            if status == UpdateStatus::UpdateAvailable {
+                let self_update_args = build_auto_update_self_update_args(args);
+                match execute_self_update(&self_update_args).await {
+                    Ok(update_report) => {
+                        report.event = "updated".to_string();
+                        report.status = update_status_label(update_report.status).to_string();
+                        report.target_version = Some(update_report.target_version);
+                        report.release_url = Some(update_report.url);
+                        report.release_sha256 = Some(update_report.sha256);
+                        report.bytes = Some(update_report.bytes);
+                        report.applied = update_report.applied;
+                        report.restart_performed = update_report.restart.performed;
+                    }
+                    Err(error) => {
+                        report.event = "update_failed".to_string();
+                        report.error = Some(format!("{error:#}"));
+                    }
+                }
+            } else {
+                report.event = "checked".to_string();
+            }
+        }
+        Err(error) => {
+            report.error = Some(format!("{error:#}"));
+        }
+    }
+
+    report
+}
+
+fn build_auto_update_self_update_args(args: &AutoUpdateArgs) -> SelfUpdateArgs {
+    SelfUpdateArgs {
+        manifest_url: Some(args.manifest_url.clone()),
+        channel: args.channel.clone(),
+        asset_url: None,
+        sha256: None,
+        version: None,
+        dry_run: false,
+        force: false,
+        restart_mode: args.restart_mode,
+        service_name: args.service_name.clone(),
+        binary_path: args.binary_path.clone(),
+    }
+}
+
+fn write_auto_update_state(path: &Path, report: &AutoUpdateCycleReport) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create auto-update status directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("speechmesh-auto-update-status.json");
+    let temp_path = path.with_file_name(format!(".{file_name}.tmp"));
+    let body = serde_json::to_vec_pretty(report).context("failed to encode auto-update status")?;
+
+    fs::write(&temp_path, body)
+        .with_context(|| format!("failed to write {}", temp_path.display()))?;
+    fs::rename(&temp_path, path).with_context(|| {
+        format!(
+            "failed to move auto-update status {} into place",
+            path.display()
+        )
+    })
+}
+
+fn now_unix_time_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0)
+}
+
+async fn execute_self_update(args: &SelfUpdateArgs) -> Result<SelfUpdateReport> {
+    let plan = resolve_update_plan(args).await?;
+    let binary_path = args
+        .binary_path
+        .clone()
+        .unwrap_or(std::env::current_exe().context("failed to resolve current executable")?);
+    let status = compare_versions(APP_VERSION, &plan.release.version);
+    if !args.force {
+        match status {
+            UpdateStatus::UpdateAvailable => {}
+            UpdateStatus::UpToDate => bail!(
+                "target version {} matches current version {}; pass --force to replace anyway",
+                plan.release.version,
+                APP_VERSION
+            ),
+            UpdateStatus::DowngradeAvailable => bail!(
+                "target version {} is older than current version {}; pass --force to replace anyway",
+                plan.release.version,
+                APP_VERSION
+            ),
+            UpdateStatus::VersionUnknown => bail!(
+                "unable to compare current version {} with target {}; pass --force to replace anyway",
+                APP_VERSION,
+                plan.release.version
+            ),
+        }
+    }
+
+    let bytes = download_binary(&plan.release.url).await?;
+    let actual_sha = sha256_hex(&bytes);
+    if !actual_sha.eq_ignore_ascii_case(plan.release.sha256.trim()) {
+        bail!(
+            "sha256 mismatch: expected {}, got {}",
+            plan.release.sha256,
+            actual_sha
+        );
+    }
+
+    let mut restart = RestartPlan {
+        requested_mode: restart_mode_label(args.restart_mode).to_string(),
+        service_name: args.service_name.clone(),
+        performed: false,
+        hint: restart_hint(args.restart_mode, args.service_name.as_deref()),
+    };
+
+    if !args.dry_run {
+        replace_binary(&binary_path, &bytes)?;
+        if args.restart_mode != RestartMode::None {
+            restart_managed_service(args.restart_mode, args.service_name.as_deref())?;
+            restart.performed = true;
+        }
+    }
+
+    Ok(SelfUpdateReport {
+        current_version: APP_VERSION.to_string(),
+        target_version: plan.release.version.clone(),
+        status,
+        executable: binary_path.display().to_string(),
+        channel: plan.release.channel.clone(),
+        url: plan.release.url.clone(),
+        sha256: actual_sha,
+        bytes: bytes.len(),
+        dry_run: args.dry_run,
+        applied: !args.dry_run,
+        restart,
     })
 }
 
@@ -847,5 +1069,76 @@ mod tests {
         assert_eq!(compare_versions("0.1.0", "0.1.0"), UpdateStatus::UpToDate);
         assert_eq!(compare_versions("0.2.0", "0.1.0"), UpdateStatus::DowngradeAvailable);
         assert_eq!(compare_versions("dev", "nightly"), UpdateStatus::VersionUnknown);
+    }
+
+    #[test]
+    fn auto_update_builds_self_update_args_from_manifest_config() {
+        let args = AutoUpdateArgs {
+            manifest_url: "https://updates.example.com/manifest.json".to_string(),
+            channel: "stable".to_string(),
+            interval_secs: 120,
+            once: false,
+            restart_mode: RestartMode::SystemdUser,
+            service_name: Some("speechmesh-device-agent.service".to_string()),
+            status_file: Some(PathBuf::from("/tmp/speechmesh-auto-update.json")),
+            binary_path: Some(PathBuf::from("/tmp/speechmesh")),
+        };
+        let mapped = build_auto_update_self_update_args(&args);
+        assert_eq!(
+            mapped.manifest_url.as_deref(),
+            Some("https://updates.example.com/manifest.json")
+        );
+        assert_eq!(mapped.channel, "stable");
+        assert_eq!(mapped.restart_mode, RestartMode::SystemdUser);
+        assert_eq!(
+            mapped.service_name.as_deref(),
+            Some("speechmesh-device-agent.service")
+        );
+        assert_eq!(mapped.binary_path, Some(PathBuf::from("/tmp/speechmesh")));
+        assert!(!mapped.dry_run);
+        assert!(!mapped.force);
+    }
+
+    #[test]
+    fn auto_update_status_file_is_written_as_json() {
+        let dir = temp_dir();
+        let status_file = dir.join("state").join("auto-update.json");
+        let report = AutoUpdateCycleReport {
+            unix_time_secs: 42,
+            event: "checked".to_string(),
+            status: "up_to_date".to_string(),
+            current_version: "0.1.0".to_string(),
+            target_version: Some("0.1.0".to_string()),
+            executable: "/tmp/speechmesh".to_string(),
+            manifest_url: "https://updates.example.com/manifest.json".to_string(),
+            channel: "stable".to_string(),
+            interval_secs: 300,
+            release_url: Some("https://updates.example.com/speechmesh".to_string()),
+            release_sha256: Some("abc123".to_string()),
+            bytes: None,
+            applied: false,
+            restart_performed: false,
+            error: None,
+        };
+
+        write_auto_update_state(&status_file, &report).expect("write status file");
+        let payload = fs::read_to_string(&status_file).expect("read status file");
+        let decoded: AutoUpdateCycleReport =
+            serde_json::from_str(&payload).expect("decode status report");
+        assert_eq!(decoded.unix_time_secs, 42);
+        assert_eq!(decoded.event, "checked");
+        assert_eq!(decoded.status, "up_to_date");
+        assert_eq!(decoded.current_version, "0.1.0");
+        assert_eq!(
+            decoded.target_version.as_deref(),
+            Some("0.1.0")
+        );
+        assert_eq!(decoded.interval_secs, 300);
+        assert_eq!(
+            decoded.release_url.as_deref(),
+            Some("https://updates.example.com/speechmesh")
+        );
+
+        fs::remove_dir_all(dir).expect("cleanup");
     }
 }

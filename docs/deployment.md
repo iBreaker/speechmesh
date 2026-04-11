@@ -171,7 +171,9 @@ Logs land in:
 The repository includes:
 
 - LaunchAgent plist template: `deploy/macos/io.speechmesh.device-agent.plist`
+- LaunchAgent auto-update template: `deploy/macos/io.speechmesh.device-agent-updater.plist`
 - Linux user service template: `deploy/linux/speechmesh-device-agent.service`
+- Linux user auto-update templates: `deploy/linux/speechmesh-device-agent-updater.service`, `deploy/linux/speechmesh-device-agent-updater.timer`
 - installer helper: `scripts/install_device_agent_service.sh`
 
 Example:
@@ -182,7 +184,8 @@ Example:
   --agent-id mac01-speaker-agent \
   --agent-name "Mac 01 Speaker Agent" \
   --device-id mac01 \
-  --shared-secret change-me
+  --shared-secret change-me \
+  --update-manifest-url https://speechmesh.example.com/releases/speechmesh.json
 ```
 
 That script:
@@ -190,7 +193,8 @@ That script:
 1. builds the unified client binary `speechmesh` unless `--skip-build` is used
 2. installs it into `~/bin/speechmesh` unless `--skip-install-binary` is used
 3. renders a LaunchAgent plist that runs `speechmesh agent run`
-4. bootstraps the service through `launchctl`
+4. optionally renders a second LaunchAgent that runs `speechmesh auto-update --once` on `StartInterval`
+5. bootstraps the service through `launchctl`
 
 Device speaker agent rollout should use the unified `speechmesh` client binary only.
 
@@ -198,6 +202,12 @@ Logs land in:
 
 - `~/Library/Logs/SpeechMesh/device-agent.log`
 - `~/Library/Logs/SpeechMesh/device-agent.err.log`
+- `~/Library/Logs/SpeechMesh/device-agent-updater.log`
+- `~/Library/Logs/SpeechMesh/device-agent-updater.err.log`
+
+Auto-update status lands in:
+
+- `~/Library/Application Support/SpeechMesh/device-agent-update.json` by default
 
 ### Linux Device Speaker Agent
 
@@ -212,19 +222,43 @@ Example:
   --agent-id linux01-speaker-agent \
   --agent-name "Linux 01 Speaker Agent" \
   --device-id linux01 \
-  --shared-secret change-me
+  --shared-secret change-me \
+  --update-manifest-url https://speechmesh.example.com/releases/speechmesh.json
 ```
 
 That path:
 
 1. builds and installs `speechmesh` unless `--skip-build` / `--skip-install-binary` is used
 2. renders `~/.config/systemd/user/speechmesh-device-agent.service`
-3. enables and starts the service through `systemctl --user`
+3. optionally renders `speechmesh-device-agent-updater.service` and `.timer`
+4. enables and starts the service through `systemctl --user`
 
 Logs land in:
 
 - `~/.local/state/speechmesh/device-agent.log`
 - `~/.local/state/speechmesh/device-agent.err.log`
+- `~/.local/state/speechmesh/device-agent-updater.log`
+- `~/.local/state/speechmesh/device-agent-updater.err.log`
+
+Auto-update status lands in:
+
+- `~/.local/state/speechmesh/device-agent-update.json` by default
+
+### Auto-Update CLI
+
+The unified client can also run update checks directly:
+
+```bash
+speechmesh auto-update \
+  --manifest-url https://speechmesh.example.com/releases/speechmesh.json \
+  --channel stable \
+  --once \
+  --restart-mode systemd-user \
+  --service-name speechmesh-device-agent.service \
+  --status-file ~/.local/state/speechmesh/device-agent-update.json
+```
+
+That command emits one JSON status line to stdout and updates the status file so fleet checks can compare current version, target version, and whether an update was applied.
 
 ### Legacy Client Binary Compatibility
 

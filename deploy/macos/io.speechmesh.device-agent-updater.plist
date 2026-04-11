@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.speechmesh.device-agent-updater</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__BINARY_PATH__</string>
+    <string>auto-update</string>
+    <string>--once</string>
+    <string>--manifest-url</string>
+    <string>__UPDATE_MANIFEST_URL__</string>
+    <string>--channel</string>
+    <string>__UPDATE_CHANNEL__</string>
+    <string>--restart-mode</string>
+    <string>launchd</string>
+    <string>--service-name</string>
+    <string>io.speechmesh.device-agent</string>
+    <string>--status-file</string>
+    <string>__UPDATE_STATUS_PATH__</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO_ROOT__</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>__UPDATE_INTERVAL_SECS__</integer>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/SpeechMesh/device-agent-updater.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/SpeechMesh/device-agent-updater.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>RUST_LOG</key>
+    <string>info</string>
+  </dict>
+</dict>
+</plist>

@@ -1010,7 +1010,7 @@ fn print_devices(agents: &[AgentSnapshot]) {
     }
     for agent in agents {
         println!(
-            "{} [{}] device={} provider={}",
+            "{} [{}] device={} provider={} version={}",
             agent.agent_id,
             agent.agent_kind,
             agent
@@ -1019,6 +1019,7 @@ fn print_devices(agents: &[AgentSnapshot]) {
                 .map(|device| device.device_id.as_str())
                 .unwrap_or("-"),
             agent.provider_id.as_deref().unwrap_or("-"),
+            agent.client_version.as_deref().unwrap_or("-"),
         );
         print_agent_common(agent);
     }
@@ -1039,6 +1040,10 @@ fn print_agent(agent: &AgentSnapshot) {
             .as_ref()
             .map(|device| device.device_id.as_str())
             .unwrap_or("-")
+    );
+    println!(
+        "client_version: {}",
+        agent.client_version.as_deref().unwrap_or("-")
     );
     if let Some(device) = &agent.device {
         if let Some(hostname) = &device.hostname {
@@ -1093,6 +1098,30 @@ fn print_agent_common(agent: &AgentSnapshot) {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+    }
+    if let Some(update_status) = &agent.update_status {
+        let mut summary = Vec::new();
+        if let Some(state) = update_status.state.as_deref() {
+            summary.push(format!("state={state}"));
+        }
+        if let Some(current) = update_status.current_version.as_deref() {
+            summary.push(format!("current={current}"));
+        }
+        if let Some(target) = update_status.target_version.as_deref() {
+            summary.push(format!("target={target}"));
+        }
+        if let Some(applied) = update_status.applied {
+            summary.push(format!("applied={applied}"));
+        }
+        if let Some(restarted) = update_status.restart_performed {
+            summary.push(format!("restarted={restarted}"));
+        }
+        if let Some(error) = update_status.error.as_deref() {
+            summary.push(format!("error={error}"));
+        }
+        if !summary.is_empty() {
+            println!("  update: {}", summary.join(", "));
+        }
     }
 }
 

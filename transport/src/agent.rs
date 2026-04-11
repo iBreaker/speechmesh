@@ -39,6 +39,24 @@ pub struct AgentDeviceIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentUpdateStatus {
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub current_version: Option<String>,
+    #[serde(default)]
+    pub target_version: Option<String>,
+    #[serde(default)]
+    pub checked_at_unix_secs: Option<u64>,
+    #[serde(default)]
+    pub applied: Option<bool>,
+    #[serde(default)]
+    pub restart_performed: Option<bool>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentHelloPayload {
     pub agent_id: String,
     pub agent_name: String,
@@ -52,6 +70,10 @@ pub struct AgentHelloPayload {
     pub agent_kind: AgentKind,
     #[serde(default)]
     pub device: Option<AgentDeviceIdentity>,
+    #[serde(default)]
+    pub client_version: Option<String>,
+    #[serde(default)]
+    pub update_status: Option<AgentUpdateStatus>,
     pub shared_secret: Option<String>,
 }
 
@@ -70,6 +92,10 @@ pub struct AgentSnapshot {
     pub capability_domains: Vec<CapabilityDomain>,
     pub agent_kind: AgentKind,
     pub device: Option<AgentDeviceIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_status: Option<AgentUpdateStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

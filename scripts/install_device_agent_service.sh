@@ -18,6 +18,11 @@ Options:
   --shared-secret SECRET   Shared secret used by gateway and agent
   --legacy-compat MODE     keep|wrap|remove old speechmesh-cli/speechmesh-agent wrappers, default wrap
   --service-name NAME      Linux systemd --user service name, default speechmesh-device-agent
+  --update-manifest-url URL  Enable auto-update checks from this manifest
+  --update-channel NAME      Auto-update channel, default stable
+  --update-interval-secs N   Auto-update polling interval, default 300
+  --update-status-path PATH  Auto-update state JSON path
+  --disable-auto-update      Do not install updater scheduler assets
 USAGE
 }
 
@@ -33,6 +38,11 @@ device_id="local-device"
 shared_secret="change-me"
 legacy_compat="wrap"
 service_name="speechmesh-device-agent"
+update_manifest_url=""
+update_channel="stable"
+update_interval_secs="300"
+update_status_path=""
+disable_auto_update="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -84,6 +94,26 @@ while [[ $# -gt 0 ]]; do
       service_name="$2"
       shift 2
       ;;
+    --update-manifest-url)
+      update_manifest_url="$2"
+      shift 2
+      ;;
+    --update-channel)
+      update_channel="$2"
+      shift 2
+      ;;
+    --update-interval-secs)
+      update_interval_secs="$2"
+      shift 2
+      ;;
+    --update-status-path)
+      update_status_path="$2"
+      shift 2
+      ;;
+    --disable-auto-update)
+      disable_auto_update="true"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -103,9 +133,30 @@ built_binary="${repo_root}/target/release/speechmesh"
 template_plist="${repo_root}/deploy/macos/io.speechmesh.device-agent.plist"
 plist_dst="${HOME}/Library/LaunchAgents/io.speechmesh.device-agent.plist"
 launchd_label="io.speechmesh.device-agent"
+template_updater_plist="${repo_root}/deploy/macos/io.speechmesh.device-agent-updater.plist"
+updater_plist_dst="${HOME}/Library/LaunchAgents/io.speechmesh.device-agent-updater.plist"
+updater_launchd_label="io.speechmesh.device-agent-updater"
 uid="$(id -u)"
 template_unit="${repo_root}/deploy/linux/speechmesh-device-agent.service"
 unit_dst="${HOME}/.config/systemd/user/${service_name}.service"
+template_updater_unit="${repo_root}/deploy/linux/speechmesh-device-agent-updater.service"
+template_updater_timer="${repo_root}/deploy/linux/speechmesh-device-agent-updater.timer"
+updater_service_name="${service_name}-updater"
+updater_unit_dst="${HOME}/.config/systemd/user/${updater_service_name}.service"
+updater_timer_dst="${HOME}/.config/systemd/user/${updater_service_name}.timer"
+escaped_repo=""
+escaped_home=""
+escaped_binary=""
+escaped_gateway=""
+escaped_agent_id=""
+escaped_agent_name=""
+escaped_device_id=""
+escaped_secret=""
+escaped_update_manifest=""
+escaped_update_channel=""
+escaped_update_interval=""
+escaped_update_status=""
+escaped_service_name=""
 
 detect_platform() {
   if [[ "${platform}" == "auto" ]]; then
@@ -126,6 +177,13 @@ detect_platform() {
     echo "invalid --platform value: ${platform}" >&2
     exit 1
   fi
+  if [[ -z "${update_status_path}" ]]; then
+    if [[ "${platform}" == "macos" ]]; then
+      update_status_path="${HOME}/Library/Application Support/SpeechMesh/device-agent-update.json"
+    else
+      update_status_path="${HOME}/.local/state/speechmesh/device-agent-update.json"
+    fi
+  fi
 }
 
 escape_path_for_sed() {
@@ -133,7 +191,6 @@ escape_path_for_sed() {
 }
 
 render_common_subst() {
-  local escaped_repo escaped_home escaped_binary escaped_gateway escaped_agent_id escaped_agent_name escaped_device_id escaped_secret
   escaped_repo="$(escape_path_for_sed "${repo_root}")"
   escaped_home="$(escape_path_for_sed "${HOME}")"
   escaped_binary="$(escape_path_for_sed "${binary_path}")"
@@ -142,23 +199,42 @@ render_common_subst() {
   escaped_agent_name="$(escape_path_for_sed "${agent_name}")"
   escaped_device_id="$(escape_path_for_sed "${device_id}")"
   escaped_secret="$(escape_path_for_sed "${shared_secret}")"
-  printf '%s\n' "${escaped_repo}" "${escaped_home}" "${escaped_binary}" "${escaped_gateway}" "${escaped_agent_id}" "${escaped_agent_name}" "${escaped_device_id}" "${escaped_secret}"
+  escaped_update_manifest="$(escape_path_for_sed "${update_manifest_url}")"
+  escaped_update_channel="$(escape_path_for_sed "${update_channel}")"
+  escaped_update_interval="$(escape_path_for_sed "${update_interval_secs}")"
+  escaped_update_status="$(escape_path_for_sed "${update_status_path}")"
+  escaped_service_name="$(escape_path_for_sed "${service_name}")"
 }
 
 render_plist() {
   mkdir -p "${HOME}/Library/LaunchAgents" "${HOME}/Library/Logs/SpeechMesh"
-  mapfile -t subst < <(render_common_subst)
+  render_common_subst
   sed \
-    -e "s|__REPO_ROOT__|${subst[0]}|g" \
-    -e "s|__HOME__|${subst[1]}|g" \
-    -e "s|__BINARY_PATH__|${subst[2]}|g" \
-    -e "s|__GATEWAY_URL__|${subst[3]}|g" \
-    -e "s|__AGENT_ID__|${subst[4]}|g" \
-    -e "s|__AGENT_NAME__|${subst[5]}|g" \
-    -e "s|__DEVICE_ID__|${subst[6]}|g" \
-    -e "s|__SHARED_SECRET__|${subst[7]}|g" \
+    -e "s|__REPO_ROOT__|${escaped_repo}|g" \
+    -e "s|__HOME__|${escaped_home}|g" \
+    -e "s|__BINARY_PATH__|${escaped_binary}|g" \
+    -e "s|__GATEWAY_URL__|${escaped_gateway}|g" \
+    -e "s|__AGENT_ID__|${escaped_agent_id}|g" \
+    -e "s|__AGENT_NAME__|${escaped_agent_name}|g" \
+    -e "s|__DEVICE_ID__|${escaped_device_id}|g" \
+    -e "s|__SHARED_SECRET__|${escaped_secret}|g" \
     "${template_plist}" > "${plist_dst}"
   plutil -lint "${plist_dst}" >/dev/null
+}
+
+render_updater_plist() {
+  mkdir -p "${HOME}/Library/LaunchAgents" "${HOME}/Library/Logs/SpeechMesh" "${HOME}/Library/Application Support/SpeechMesh"
+  render_common_subst
+  sed \
+    -e "s|__REPO_ROOT__|${escaped_repo}|g" \
+    -e "s|__HOME__|${escaped_home}|g" \
+    -e "s|__BINARY_PATH__|${escaped_binary}|g" \
+    -e "s|__UPDATE_MANIFEST_URL__|${escaped_update_manifest}|g" \
+    -e "s|__UPDATE_CHANNEL__|${escaped_update_channel}|g" \
+    -e "s|__UPDATE_INTERVAL_SECS__|${escaped_update_interval}|g" \
+    -e "s|__UPDATE_STATUS_PATH__|${escaped_update_status}|g" \
+    "${template_updater_plist}" > "${updater_plist_dst}"
+  plutil -lint "${updater_plist_dst}" >/dev/null
 }
 
 render_unit() {
@@ -167,17 +243,34 @@ render_unit() {
     exit 1
   fi
   mkdir -p "${HOME}/.config/systemd/user" "${HOME}/.local/state/speechmesh"
-  mapfile -t subst < <(render_common_subst)
+  render_common_subst
   sed \
-    -e "s|__REPO_ROOT__|${subst[0]}|g" \
-    -e "s|__HOME__|${subst[1]}|g" \
-    -e "s|__BINARY_PATH__|${subst[2]}|g" \
-    -e "s|__GATEWAY_URL__|${subst[3]}|g" \
-    -e "s|__AGENT_ID__|${subst[4]}|g" \
-    -e "s|__AGENT_NAME__|${subst[5]}|g" \
-    -e "s|__DEVICE_ID__|${subst[6]}|g" \
-    -e "s|__SHARED_SECRET__|${subst[7]}|g" \
+    -e "s|__REPO_ROOT__|${escaped_repo}|g" \
+    -e "s|__HOME__|${escaped_home}|g" \
+    -e "s|__BINARY_PATH__|${escaped_binary}|g" \
+    -e "s|__GATEWAY_URL__|${escaped_gateway}|g" \
+    -e "s|__AGENT_ID__|${escaped_agent_id}|g" \
+    -e "s|__AGENT_NAME__|${escaped_agent_name}|g" \
+    -e "s|__DEVICE_ID__|${escaped_device_id}|g" \
+    -e "s|__SHARED_SECRET__|${escaped_secret}|g" \
     "${template_unit}" > "${unit_dst}"
+}
+
+render_updater_unit() {
+  render_common_subst
+  sed \
+    -e "s|__REPO_ROOT__|${escaped_repo}|g" \
+    -e "s|__HOME__|${escaped_home}|g" \
+    -e "s|__BINARY_PATH__|${escaped_binary}|g" \
+    -e "s|__UPDATE_MANIFEST_URL__|${escaped_update_manifest}|g" \
+    -e "s|__UPDATE_CHANNEL__|${escaped_update_channel}|g" \
+    -e "s|__UPDATE_STATUS_PATH__|${escaped_update_status}|g" \
+    -e "s|__SERVICE_NAME__|${escaped_service_name}|g" \
+    "${template_updater_unit}" > "${updater_unit_dst}"
+  sed \
+    -e "s|__UPDATE_INTERVAL_SECS__|${escaped_update_interval}|g" \
+    -e "s|__UPDATER_SERVICE_NAME__|$(escape_path_for_sed "${updater_service_name}")|g" \
+    "${template_updater_timer}" > "${updater_timer_dst}"
 }
 
 build_binary() {
@@ -251,13 +344,26 @@ bootout_service() {
   launchctl bootout "gui/${uid}" "${plist_dst}" >/dev/null 2>&1 || true
 }
 
+bootout_updater_service() {
+  launchctl bootout "gui/${uid}" "${updater_plist_dst}" >/dev/null 2>&1 || true
+}
+
 bootstrap_service() {
   launchctl bootstrap "gui/${uid}" "${plist_dst}"
   launchctl kickstart -k "gui/${uid}/${launchd_label}"
 }
 
+bootstrap_updater_service() {
+  launchctl bootstrap "gui/${uid}" "${updater_plist_dst}"
+  launchctl kickstart -k "gui/${uid}/${updater_launchd_label}" >/dev/null 2>&1 || true
+}
+
 status_service() {
   launchctl print "gui/${uid}/${launchd_label}" | sed -n '1,120p'
+}
+
+status_updater_service() {
+  launchctl print "gui/${uid}/${updater_launchd_label}" | sed -n '1,120p'
 }
 
 linux_enable_service() {
@@ -265,12 +371,30 @@ linux_enable_service() {
   systemctl --user enable --now "${service_name}.service"
 }
 
+linux_enable_updater() {
+  systemctl --user daemon-reload
+  systemctl --user enable --now "${updater_service_name}.timer"
+}
+
 linux_stop_service() {
   systemctl --user disable --now "${service_name}.service" >/dev/null 2>&1 || true
 }
 
+linux_stop_updater() {
+  systemctl --user disable --now "${updater_service_name}.timer" >/dev/null 2>&1 || true
+  systemctl --user stop "${updater_service_name}.service" >/dev/null 2>&1 || true
+}
+
 linux_status_service() {
   systemctl --user --no-pager --full status "${service_name}.service" | sed -n '1,120p'
+}
+
+linux_status_updater() {
+  systemctl --user --no-pager --full status "${updater_service_name}.timer" | sed -n '1,120p'
+}
+
+auto_update_enabled() {
+  [[ "${disable_auto_update}" != "true" && -n "${update_manifest_url}" ]]
 }
 
 install_platform_service() {
@@ -278,38 +402,75 @@ install_platform_service() {
     render_plist
     bootout_service
     bootstrap_service
+    if auto_update_enabled; then
+      render_updater_plist
+      bootout_updater_service
+      bootstrap_updater_service
+    else
+      bootout_updater_service
+      rm -f "${updater_plist_dst}"
+    fi
     status_service
+    if auto_update_enabled; then
+      echo "---"
+      status_updater_service
+    fi
     return
   fi
   render_unit
   linux_enable_service
+  if auto_update_enabled; then
+    render_updater_unit
+    linux_enable_updater
+  else
+    linux_stop_updater
+    rm -f "${updater_unit_dst}" "${updater_timer_dst}"
+    systemctl --user daemon-reload
+  fi
   linux_status_service
+  if auto_update_enabled; then
+    echo "---"
+    linux_status_updater
+  fi
 }
 
 stop_platform_service() {
   if [[ "${platform}" == "macos" ]]; then
     bootout_service
+    bootout_updater_service
     return
   fi
   linux_stop_service
+  linux_stop_updater
 }
 
 status_platform_service() {
   if [[ "${platform}" == "macos" ]]; then
     status_service
+    if [[ -f "${updater_plist_dst}" ]]; then
+      echo "---"
+      status_updater_service
+    fi
     return
   fi
   linux_status_service
+  if [[ -f "${updater_timer_dst}" ]]; then
+    echo "---"
+    linux_status_updater
+  fi
 }
 
 uninstall_platform_service() {
   if [[ "${platform}" == "macos" ]]; then
     bootout_service
+    bootout_updater_service
     rm -f "${plist_dst}"
+    rm -f "${updater_plist_dst}"
     return
   fi
   linux_stop_service
-  rm -f "${unit_dst}"
+  linux_stop_updater
+  rm -f "${unit_dst}" "${updater_unit_dst}" "${updater_timer_dst}"
   systemctl --user daemon-reload
 }
 

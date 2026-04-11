@@ -1,0 +1,12 @@
+[Unit]
+Description=SpeechMesh Device Agent Updater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=__BINARY_PATH__ auto-update --once --manifest-url __UPDATE_MANIFEST_URL__ --channel __UPDATE_CHANNEL__ --restart-mode systemd-user --service-name __SERVICE_NAME__.service --status-file __UPDATE_STATUS_PATH__
+WorkingDirectory=__REPO_ROOT__
+Environment=RUST_LOG=info
+StandardOutput=append:__HOME__/.local/state/speechmesh/device-agent-updater.log
+StandardError=append:__HOME__/.local/state/speechmesh/device-agent-updater.err.log

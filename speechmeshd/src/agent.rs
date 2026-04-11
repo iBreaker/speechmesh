@@ -94,6 +94,8 @@ pub fn to_transport_snapshot(snapshot: &DeviceAgentSnapshot) -> AgentSnapshot {
         capabilities: snapshot.capabilities.clone(),
         capability_domains: snapshot.capability_domains.clone(),
         agent_kind: from_device_agent_kind(snapshot.agent_kind),
+        client_version: snapshot.client_version.clone(),
+        update_status: snapshot.update_status.clone(),
         device: snapshot.device.as_ref().map(from_device_identity),
     }
 }
@@ -174,6 +176,8 @@ impl AgentRegistry {
             capabilities: hello.capabilities,
             capability_domains: hello.capability_domains,
             agent_kind: to_device_agent_kind(hello.agent_kind),
+            client_version: hello.client_version,
+            update_status: hello.update_status,
             device: hello.device.as_ref().map(to_device_identity),
             device_info: None, // 旧版 agent 没有 device_info
             command_tx,
@@ -945,6 +949,8 @@ async fn run_local_agent_once(config: &LocalAgentConfig) -> Result<(), BridgeErr
                         std::env::consts::ARCH
                     )),
                 }),
+                client_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                update_status: None,
                 shared_secret: config.shared_secret.clone(),
             },
         })

@@ -149,6 +149,8 @@ mod tests {
             capabilities: vec!["speaker".to_string()],
             capability_domains: vec![CapabilityDomain::Tts],
             agent_kind: AgentKind::Device,
+            client_version: None,
+            update_status: None,
             device: Some(AgentDeviceIdentity {
                 device_id: device.id.as_str().to_string(),
                 hostname: device.hostname.clone(),
@@ -168,6 +170,8 @@ mod tests {
             capabilities: vec!["speaker".to_string()],
             capability_domains: vec![CapabilityDomain::Tts],
             agent_kind: AgentKind::Device,
+            client_version: None,
+            update_status: None,
             device: Some(AgentDeviceIdentity {
                 device_id: device_id.to_string(),
                 hostname: None,

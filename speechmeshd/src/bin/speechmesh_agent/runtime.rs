@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -10,8 +12,9 @@ use speechmesh_core::{AudioEncoding, AudioFormat, CapabilityDomain};
 use speechmeshd::agent::{
     AgentDeviceIdentity, AgentEmptyPayload, AgentErrorPayload, AgentHelloPayload, AgentKind,
     AgentSessionEndedPayload, AgentTaskState, AgentTaskStatusPayload, AgentToGatewayMessage,
-    GatewayToAgentMessage,
+    AgentUpdateStatus, GatewayToAgentMessage,
 };
+use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
@@ -29,6 +32,24 @@ pub struct AgentRuntimeConfig {
     pub shared_secret: Option<String>,
     pub capabilities: Vec<String>,
     pub reconnect_delay: Duration,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalAutoUpdateState {
+    #[serde(default)]
+    unix_time_secs: Option<u64>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    current_version: Option<String>,
+    #[serde(default)]
+    target_version: Option<String>,
+    #[serde(default)]
+    applied: Option<bool>,
+    #[serde(default)]
+    restart_performed: Option<bool>,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 #[derive(Default)]
@@ -93,6 +114,8 @@ async fn run_once(config: &AgentRuntimeConfig) -> Result<()> {
                 hostname: Some(hostname_fallback()),
                 platform: Some(std::env::consts::OS.to_string()),
             }),
+            client_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            update_status: load_update_status(),
             shared_secret: config.shared_secret.clone(),
         },
     };
@@ -368,6 +391,33 @@ async fn handle_gateway_message(
 
 fn hostname_fallback() -> String {
     std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown-host".to_string())
+}
+
+fn load_update_status() -> Option<AgentUpdateStatus> {
+    let path = default_update_status_path()?;
+    let bytes = fs::read(path).ok()?;
+    let state: LocalAutoUpdateState = serde_json::from_slice(&bytes).ok()?;
+    Some(AgentUpdateStatus {
+        state: state.status,
+        current_version: state.current_version,
+        target_version: state.target_version,
+        checked_at_unix_secs: state.unix_time_secs,
+        applied: state.applied,
+        restart_performed: state.restart_performed,
+        error: state.error,
+    })
+}
+
+fn default_update_status_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let relative = if cfg!(target_os = "macos") {
+        PathBuf::from("Library/Application Support/SpeechMesh/device-agent-update.json")
+    } else if cfg!(target_os = "linux") {
+        PathBuf::from(".local/state/speechmesh/device-agent-update.json")
+    } else {
+        return None;
+    };
+    Some(home.join(relative))
 }
 
 async fn start_playback_task(format: &Option<AudioFormat>) -> Result<PlaybackTask> {

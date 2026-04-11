@@ -173,7 +173,9 @@ The repository already includes:
 - macOS LaunchAgent asset: `deploy/macos/io.speechmesh.apple-agent.plist`
 - macOS installer helper: `scripts/install_apple_agent_service.sh`
 - device-agent LaunchAgent asset: `deploy/macos/io.speechmesh.device-agent.plist`
+- device-agent updater LaunchAgent asset: `deploy/macos/io.speechmesh.device-agent-updater.plist`
 - Linux systemd user unit template: `deploy/linux/speechmesh-device-agent.service`
+- Linux systemd user updater units: `deploy/linux/speechmesh-device-agent-updater.service` and `deploy/linux/speechmesh-device-agent-updater.timer`
 - cross-platform device-agent installer helper: `scripts/install_device_agent_service.sh`
 
 Typical flow:
@@ -190,7 +192,8 @@ Typical flow:
   --agent-id mac01-speaker-agent \
   --agent-name "Mac 01 Speaker Agent" \
   --device-id mac01 \
-  --shared-secret "change-me"
+  --shared-secret "change-me" \
+  --update-manifest-url https://speechmesh.example.com/releases/speechmesh.json
 # on Linux host (systemd --user):
 ./scripts/install_device_agent_service.sh install \
   --platform linux \
@@ -198,7 +201,8 @@ Typical flow:
   --agent-id linux01-speaker-agent \
   --agent-name "Linux 01 Speaker Agent" \
   --device-id linux01 \
-  --shared-secret "change-me"
+  --shared-secret "change-me" \
+  --update-manifest-url https://speechmesh.example.com/releases/speechmesh.json
 ./scripts/run_ws_asr_e2e.sh wss://speechmesh.example.com/ws "speech mesh"
 ```
 

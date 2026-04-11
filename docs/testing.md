@@ -159,6 +159,7 @@ Check:
 
 - the gateway and agent share the same secret
 - the relevant service is running (`io.speechmesh.apple-agent` or `io.speechmesh.device-agent` on macOS, `speechmesh-device-agent.service` via `systemd --user` on Linux)
+- if auto-update is enabled, the updater scheduler is also loaded (`io.speechmesh.device-agent-updater` on macOS, `speechmesh-device-agent-updater.timer` on Linux)
 - the Apple bridge binary is present and executable
 - ingress allows long-lived WebSocket connections
 

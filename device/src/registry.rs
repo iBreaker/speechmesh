@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use speechmesh_core::CapabilityDomain;
+use speechmesh_transport::agent::AgentUpdateStatus;
 use tokio::sync::Mutex;
 use tracing::warn;
 
@@ -44,6 +45,8 @@ pub struct RegisteredAgent<Cmd: Send + Clone + 'static> {
     pub capabilities: Vec<String>,
     pub capability_domains: Vec<CapabilityDomain>,
     pub agent_kind: AgentKind,
+    pub client_version: Option<String>,
+    pub update_status: Option<AgentUpdateStatus>,
     /// 旧版设备身份（向后兼容字段）
     pub device: Option<AgentDeviceIdentity>,
     /// 多端点设备信息（新版）
@@ -61,6 +64,10 @@ pub struct AgentSnapshot {
     pub capabilities: Vec<String>,
     pub capability_domains: Vec<CapabilityDomain>,
     pub agent_kind: AgentKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_status: Option<AgentUpdateStatus>,
     pub device: Option<AgentDeviceIdentity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_info: Option<Device>,
@@ -75,6 +82,8 @@ impl AgentSnapshot {
             capabilities: agent.capabilities.clone(),
             capability_domains: agent.capability_domains.clone(),
             agent_kind: agent.agent_kind,
+            client_version: agent.client_version.clone(),
+            update_status: agent.update_status.clone(),
             device: agent.device.clone(),
             device_info: agent.device_info.clone(),
         }
@@ -336,6 +345,8 @@ mod tests {
             capabilities: vec!["speaker".to_string()],
             capability_domains: vec![CapabilityDomain::Tts],
             agent_kind: kind,
+            client_version: None,
+            update_status: None,
             device: device_id.map(|id| AgentDeviceIdentity {
                 device_id: id.to_string(),
                 hostname: None,

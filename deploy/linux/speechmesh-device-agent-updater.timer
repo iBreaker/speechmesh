@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic SpeechMesh Device Agent Auto-Update
+
+[Timer]
+OnBootSec=45
+OnUnitActiveSec=__UPDATE_INTERVAL_SECS__
+Persistent=true
+Unit=__UPDATER_SERVICE_NAME__.service
+
+[Install]
+WantedBy=timers.target
