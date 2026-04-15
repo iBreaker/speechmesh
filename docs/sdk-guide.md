@@ -8,8 +8,9 @@ SpeechMesh ships first-party client SDKs so remote devices can use a single gate
 | --- | --- | --- | --- |
 | Rust | `sdks/rust` | usable | async WebSocket client built on `tokio-tungstenite` |
 | Go | `sdks/go` | usable | WebSocket client built on `github.com/coder/websocket` |
+| Swift | `sdks/swift` | usable | iOS-ready WebSocket client with microphone and playback helpers |
 
-Both SDKs target the same public WebSocket contract and the same split deployment topology:
+All first-party SDKs target the same public WebSocket contract and the same split deployment topology:
 
 - clients run anywhere
 - the gateway runs centrally
@@ -208,3 +209,29 @@ The shared provider selector supports:
 - preferred capability flags
 
 Use provider capabilities to express runtime intent, such as `streaming-input` or `on-device`, instead of hard-coding transport-specific logic into the client.
+
+## Swift SDK
+
+Path: `sdks/swift`
+
+Example:
+
+```swift
+import SpeechMeshSwift
+
+let client = SpeechMeshClient(
+    config: SpeechMeshClientConfig(
+        url: URL(string: "wss://speechmesh.example.com/ws")!,
+        clientName: "ios-demo"
+    )
+)
+
+try await client.connect()
+let _providers = try await client.discoverASR()
+```
+
+The Swift package is intended for iOS-first integrations and also includes:
+
+- `SpeechMeshMicrophoneStreamer` for 16 kHz mono PCM microphone capture
+- `SpeechMeshTTSCollector` for assembling streamed TTS audio chunks
+- `SpeechMeshAudioPlayer` for local playback of completed TTS output

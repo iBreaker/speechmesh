@@ -6,3 +6,7 @@ dist/
 target/
 .cargo/
 vendor/
+# Xcode / SwiftPM user data
+.swiftpm/
+xcuserdata/
+*.xcuserstate

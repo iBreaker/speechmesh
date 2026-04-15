@@ -8,6 +8,7 @@ SpeechMesh currently ships first-party client SDKs for the public WebSocket gate
 | --- | --- | --- | --- |
 | Rust | `sdks/rust` | usable | `examples/ws-asr-e2e` |
 | Go | `sdks/go` | usable | `sdks/go/examples/stream_asr` |
+| Swift | `sdks/swift` | usable | iOS-ready package examples in `sdks/swift/README.md` |
 
 ## Design Intent
 

@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>SpeechMesh iPhone TTS</title>
+  <style>
+    :root {
+      --bg: #f6f3ea;
+      --card: rgba(255,255,255,0.78);
+      --ink: #192126;
+      --muted: #5d666d;
+      --line: rgba(25,33,38,0.12);
+      --accent: #d95d39;
+      --accent-2: #19494f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-rounded, "SF Pro Rounded", "PingFang SC", system-ui, sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(217,93,57,0.16), transparent 24rem),
+        radial-gradient(circle at bottom right, rgba(25,73,79,0.16), transparent 24rem),
+        var(--bg);
+      min-height: 100vh;
+    }
+    .wrap {
+      max-width: 48rem;
+      margin: 0 auto;
+      padding: 1.2rem 1rem 3rem;
+    }
+    .hero {
+      padding: 1rem 0 1.2rem;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(2rem, 7vw, 3.4rem);
+      line-height: 0.96;
+      letter-spacing: -0.04em;
+    }
+    .sub {
+      margin-top: 0.8rem;
+      color: var(--muted);
+      line-height: 1.5;
+      max-width: 34rem;
+    }
+    .card {
+      background: var(--card);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--line);
+      border-radius: 1.25rem;
+      padding: 1rem;
+      box-shadow: 0 12px 40px rgba(25,33,38,0.08);
+      margin-top: 1rem;
+    }
+    label {
+      display: block;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin: 0.3rem 0 0.45rem;
+    }
+    input, textarea, button, select {
+      width: 100%;
+      border-radius: 0.95rem;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.9);
+      padding: 0.95rem 1rem;
+      font: inherit;
+      color: var(--ink);
+    }
+    textarea {
+      min-height: 8.5rem;
+      resize: vertical;
+    }
+    .grid {
+      display: grid;
+      gap: 0.9rem;
+    }
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.8rem;
+    }
+    button {
+      font-weight: 700;
+      border: none;
+      color: white;
+      background: linear-gradient(135deg, var(--accent), #ee8b47);
+      box-shadow: 0 14px 30px rgba(217,93,57,0.28);
+    }
+    button.secondary {
+      background: linear-gradient(135deg, var(--accent-2), #286972);
+      box-shadow: 0 14px 30px rgba(25,73,79,0.22);
+    }
+    button:disabled {
+      opacity: 0.55;
+      box-shadow: none;
+    }
+    .status {
+      margin-top: 0.8rem;
+      padding: 0.9rem 1rem;
+      border-radius: 0.95rem;
+      background: rgba(25,33,38,0.05);
+      color: var(--muted);
+      min-height: 3.2rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+    audio {
+      width: 100%;
+      margin-top: 1rem;
+    }
+    .meta {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-top: 0.7rem;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <h1>SpeechMesh<br>iPhone TTS</h1>
+      <div class="sub">这是一个先把手机播报调通的最小页面。它直接连 SpeechMesh 的 <code>/ws</code>，发起 TTS，会在 iPhone 上本地播放返回的音频。</div>
+    </div>
+
+    <div class="card grid">
+      <div>
+        <label for="gateway">Gateway URL</label>
+        <input id="gateway" value="wss://speechmesh.svc.lan.breaker.host/ws" autocapitalize="off" autocorrect="off">
+      </div>
+      <div>
+        <label for="provider">Provider ID</label>
+        <input id="provider" value="minimax.tts" autocapitalize="off" autocorrect="off">
+      </div>
+      <div>
+        <label for="voice">Voice ID</label>
+        <input id="voice" value="female-shaonv" autocapitalize="off" autocorrect="off">
+      </div>
+      <div>
+        <label for="text">Text</label>
+        <textarea id="text">你好，我是 SpeechMesh iPhone TTS 测试。</textarea>
+      </div>
+      <div class="actions">
+        <button id="loadVoicesBtn" class="secondary">Load Voices</button>
+        <button id="playBtn">Play On iPhone</button>
+      </div>
+      <div class="status" id="status">Ready</div>
+      <div class="meta" id="meta"></div>
+      <audio id="player" controls playsinline></audio>
+    </div>
+  </div>
+
+  <script>
+    const gatewayEl = document.getElementById('gateway');
+    const providerEl = document.getElementById('provider');
+    const voiceEl = document.getElementById('voice');
+    const textEl = document.getElementById('text');
+    const statusEl = document.getElementById('status');
+    const metaEl = document.getElementById('meta');
+    const player = document.getElementById('player');
+    const playBtn = document.getElementById('playBtn');
+    const loadVoicesBtn = document.getElementById('loadVoicesBtn');
+
+    let nextRequestID = 0;
+    let currentURL = null;
+
+    function requestID() {
+      nextRequestID += 1;
+      return `req_${nextRequestID}`;
+    }
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function setBusy(busy) {
+      playBtn.disabled = busy;
+      loadVoicesBtn.disabled = busy;
+    }
+
+    function resetAudioURL() {
+      if (currentURL) {
+        URL.revokeObjectURL(currentURL);
+        currentURL = null;
+      }
+    }
+
+    async function openSocket() {
+      return new Promise((resolve, reject) => {
+        const ws = new WebSocket(gatewayEl.value.trim());
+        ws.onopen = () => {
+          ws.send(JSON.stringify({
+            type: 'hello',
+            payload: {
+              protocol_version: 'v1',
+              client_name: 'speechmesh-ios-web-demo'
+            }
+          }));
+        };
+        ws.onerror = () => reject(new Error('WebSocket connection failed'));
+        ws.onmessage = (event) => {
+          const message = JSON.parse(event.data);
+          if (message.type === 'hello.ok') {
+            resolve(ws);
+          } else if (message.type === 'error') {
+            reject(new Error(message.payload?.error?.message || 'SpeechMesh error during hello'));
+          }
+        };
+      });
+    }
+
+    async function loadVoices() {
+      setBusy(true);
+      setStatus('Loading voices...');
+      metaEl.textContent = '';
+      try {
+        const ws = await openSocket();
+        const req = requestID();
+        ws.send(JSON.stringify({
+          type: 'tts.voices',
+          request_id: req,
+          payload: {
+            provider: {
+              mode: 'provider',
+              provider_id: providerEl.value.trim(),
+              required_capabilities: [],
+              preferred_capabilities: []
+            },
+            language: null
+          }
+        }));
+        const voices = await new Promise((resolve, reject) => {
+          ws.onmessage = (event) => {
+            const message = JSON.parse(event.data);
+            if (message.type === 'tts.voices.result' && message.request_id === req) {
+              resolve(message.payload.voices || []);
+            } else if (message.type === 'error' && message.request_id === req) {
+              reject(new Error(message.payload?.error?.message || 'Voice list failed'));
+            }
+          };
+          ws.onerror = () => reject(new Error('WebSocket error while loading voices'));
+        });
+        ws.close();
+        if (voices.length > 0) {
+          voiceEl.value = voices[0].id;
+        }
+        metaEl.textContent = voices.map(v => `${v.display_name || v.id} (${v.id})`).join(' · ');
+        setStatus(`Loaded ${voices.length} voice(s).`);
+      } catch (error) {
+        setStatus(`Load voices failed: ${error.message}`);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function playTTS() {
+      setBusy(true);
+      setStatus('Connecting to gateway...');
+      metaEl.textContent = '';
+      resetAudioURL();
+      try {
+        player.pause();
+        player.removeAttribute('src');
+        await player.play().catch(() => {});
+
+        const ws = await openSocket();
+        const startReq = requestID();
+        ws.send(JSON.stringify({
+          type: 'tts.start',
+          request_id: startReq,
+          payload: {
+            provider: {
+              mode: 'provider',
+              provider_id: providerEl.value.trim(),
+              required_capabilities: [],
+              preferred_capabilities: []
+            },
+            input_kind: 'text',
+            output_format: null,
+            options: {
+              language: 'zh-CN',
+              voice: voiceEl.value.trim() || null,
+              stream: true
+            }
+          }
+        }));
+
+        const chunks = [];
+        let sessionID = null;
+        let totalBytes = 0;
+        let totalChunks = 0;
+
+        await new Promise((resolve, reject) => {
+          ws.onmessage = async (event) => {
+            const message = JSON.parse(event.data);
+            try {
+              if (message.type === 'session.started' && message.request_id === startReq) {
+                sessionID = message.session_id;
+                setStatus('Submitting text...');
+                ws.send(JSON.stringify({
+                  type: 'tts.input.append',
+                  session_id: sessionID,
+                  payload: { delta: textEl.value }
+                }));
+                ws.send(JSON.stringify({
+                  type: 'tts.commit',
+                  session_id: sessionID,
+                  payload: {}
+                }));
+                setStatus('Receiving audio...');
+                return;
+              }
+
+              if (message.type === 'tts.audio.delta' && message.session_id === sessionID) {
+                const raw = atob(message.payload.audio_base64);
+                const bytes = new Uint8Array(raw.length);
+                for (let i = 0; i < raw.length; i += 1) {
+                  bytes[i] = raw.charCodeAt(i);
+                }
+                chunks.push(bytes);
+                totalChunks += 1;
+                totalBytes += bytes.byteLength;
+                metaEl.textContent = `chunks: ${totalChunks} · bytes: ${totalBytes}`;
+                return;
+              }
+
+              if (message.type === 'tts.audio.done' && message.session_id === sessionID) {
+                const blob = new Blob(chunks, { type: 'audio/mpeg' });
+                currentURL = URL.createObjectURL(blob);
+                player.src = currentURL;
+                player.load();
+                setStatus('Playing on iPhone...');
+                await player.play();
+                return;
+              }
+
+              if (message.type === 'session.ended' && message.session_id === sessionID) {
+                ws.close();
+                resolve();
+                return;
+              }
+
+              if (message.type === 'error') {
+                reject(new Error(message.payload?.error?.message || 'SpeechMesh returned an error'));
+              }
+            } catch (error) {
+              reject(error);
+            }
+          };
+          ws.onerror = () => reject(new Error('WebSocket error during TTS playback'));
+          player.onended = () => setStatus('Playback finished');
+        });
+      } catch (error) {
+        setStatus(`Playback failed: ${error.message}`);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    loadVoicesBtn.addEventListener('click', loadVoices);
+    playBtn.addEventListener('click', playTTS);
+  </script>
+</body>
+</html>

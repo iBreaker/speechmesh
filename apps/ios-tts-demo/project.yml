@@ -1,0 +1,38 @@
+name: SpeechMeshTTSDemo
+options:
+  minimumXcodeGenVersion: 2.38.0
+  deploymentTarget:
+    iOS: 17.0
+packages:
+  SpeechMeshSwift:
+    path: ../../sdks/swift
+targets:
+  SpeechMeshTTSDemo:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: App
+      - path: Resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.breaker.speechmeshttsdemo
+        PRODUCT_NAME: SpeechMeshTTSDemo
+        SWIFT_VERSION: 6.0
+        DEVELOPMENT_TEAM: 49JLVGD974
+        CODE_SIGN_STYLE: Automatic
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 0.1.0
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: SpeechMesh TTS
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+        INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        TARGETED_DEVICE_FAMILY: 1
+    dependencies:
+      - package: SpeechMeshSwift
+        product: SpeechMeshSwift
+    scheme:
+      testTargets: []
