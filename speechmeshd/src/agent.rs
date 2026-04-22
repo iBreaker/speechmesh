@@ -25,6 +25,12 @@ use crate::asr_bridge::{
 };
 use crate::bridge_support::BridgeError;
 
+/// Interval between gateway-initiated heartbeat pings to each agent.
+const AGENT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+/// If no frame is received from an agent within this window, drop the
+/// connection so the agent can reconnect promptly.
+const AGENT_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
+
 // 从 device crate 引入注册表和设备模型类型
 pub use speechmesh_device::registry::{
     AgentRemovalResult, AgentSnapshot as DeviceAgentSnapshot, AgentSnapshotFilter,
@@ -44,9 +50,7 @@ pub struct PlayAudioRouteRequest {
 // ── 类型转换：transport 协议类型 <-> device 注册表类型 ──
 
 /// 将 transport 层的 AgentKind 转换为 device 层的 AgentKind
-fn to_device_agent_kind(
-    kind: AgentKind,
-) -> speechmesh_device::registry::AgentKind {
+fn to_device_agent_kind(kind: AgentKind) -> speechmesh_device::registry::AgentKind {
     match kind {
         AgentKind::AsrProvider => speechmesh_device::registry::AgentKind::AsrProvider,
         AgentKind::Device => speechmesh_device::registry::AgentKind::Device,
@@ -54,9 +58,7 @@ fn to_device_agent_kind(
 }
 
 /// 将 device 层的 AgentKind 转换为 transport 层的 AgentKind
-fn from_device_agent_kind(
-    kind: speechmesh_device::registry::AgentKind,
-) -> AgentKind {
+fn from_device_agent_kind(kind: speechmesh_device::registry::AgentKind) -> AgentKind {
     match kind {
         speechmesh_device::registry::AgentKind::AsrProvider => AgentKind::AsrProvider,
         speechmesh_device::registry::AgentKind::Device => AgentKind::Device,
@@ -108,6 +110,8 @@ struct SessionRoute {
     started_tx: Option<oneshot::Sender<Result<(), BridgeError>>>,
 }
 
+type TaskWaitResult = Result<AgentTaskStatusPayload, BridgeError>;
+
 /// Agent 注册表包装器
 ///
 /// 在 device crate 的泛型注册表之上，增加会话路由管理（因为会话路由依赖 speechmeshd 的具体类型）。
@@ -115,6 +119,7 @@ struct SessionRoute {
 pub struct AgentRegistry {
     device_registry: speechmesh_device::registry::AgentRegistry<GatewayToAgentMessage>,
     sessions: Arc<Mutex<HashMap<SessionId, SessionRoute>>>,
+    task_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<TaskWaitResult>>>>,
 }
 
 fn remove_orphaned_sessions(
@@ -143,9 +148,11 @@ fn remove_orphaned_sessions(
 impl AgentRegistry {
     pub fn new(expected_shared_secret: Option<String>) -> Self {
         Self {
-            device_registry:
-                speechmesh_device::registry::AgentRegistry::new(expected_shared_secret),
+            device_registry: speechmesh_device::registry::AgentRegistry::new(
+                expected_shared_secret,
+            ),
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            task_waiters: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -229,6 +236,38 @@ impl AgentRegistry {
         }
         for task_id in orphaned_tasks {
             warn!("agent disconnected before task completion task_id={task_id}");
+            self.resolve_task_waiter(
+                &task_id,
+                Err(BridgeError::Disconnected(format!(
+                    "agent disconnected before task completion: {task_id}"
+                ))),
+            )
+            .await;
+        }
+    }
+
+    pub async fn subscribe_task_waiter(
+        &self,
+        task_id: String,
+    ) -> oneshot::Receiver<TaskWaitResult> {
+        let (tx, rx) = oneshot::channel();
+        let mut waiters = self.task_waiters.lock().await;
+        waiters.insert(task_id, tx);
+        rx
+    }
+
+    pub async fn remove_task_waiter(&self, task_id: &str) {
+        let mut waiters = self.task_waiters.lock().await;
+        waiters.remove(task_id);
+    }
+
+    async fn resolve_task_waiter(&self, task_id: &str, result: TaskWaitResult) {
+        let waiter = {
+            let mut waiters = self.task_waiters.lock().await;
+            waiters.remove(task_id)
+        };
+        if let Some(waiter) = waiter {
+            let _ = waiter.send(result);
         }
     }
 
@@ -308,9 +347,7 @@ impl AgentRegistry {
     async fn route_event(&self, session_id: &SessionId, event: BridgeAsrEvent) {
         let event_tx = {
             let sessions = self.sessions.lock().await;
-            sessions
-                .get(session_id)
-                .map(|route| route.event_tx.clone())
+            sessions.get(session_id).map(|route| route.event_tx.clone())
         };
         if let Some(event_tx) = event_tx {
             let _ = event_tx.send(event).await;
@@ -394,9 +431,10 @@ impl AgentRegistry {
         let command_tx = self.device_registry.agent_command_tx(&agent_id).await;
         let Some(command_tx) = command_tx else {
             self.remove_task(task_id).await;
-            return Err(BridgeError::Disconnected(format!(
-                "agent {agent_id} is no longer available for task {task_id}"
-            )));
+            let message = format!("agent {agent_id} is no longer available for task {task_id}");
+            self.resolve_task_waiter(task_id, Err(BridgeError::Disconnected(message.clone())))
+                .await;
+            return Err(BridgeError::Disconnected(message));
         };
         if command_tx
             .send(GatewayToAgentMessage::TaskPlayAudioChunk {
@@ -407,9 +445,10 @@ impl AgentRegistry {
             .is_err()
         {
             self.remove_task(task_id).await;
-            return Err(BridgeError::Disconnected(format!(
-                "failed to deliver play_audio chunk for task {task_id}"
-            )));
+            let message = format!("failed to deliver play_audio chunk for task {task_id}");
+            self.resolve_task_waiter(task_id, Err(BridgeError::Disconnected(message.clone())))
+                .await;
+            return Err(BridgeError::Disconnected(message));
         }
         Ok(())
     }
@@ -421,9 +460,10 @@ impl AgentRegistry {
         let command_tx = self.device_registry.agent_command_tx(&agent_id).await;
         let Some(command_tx) = command_tx else {
             self.remove_task(task_id).await;
-            return Err(BridgeError::Disconnected(format!(
-                "agent {agent_id} is no longer available for task {task_id}"
-            )));
+            let message = format!("agent {agent_id} is no longer available for task {task_id}");
+            self.resolve_task_waiter(task_id, Err(BridgeError::Disconnected(message.clone())))
+                .await;
+            return Err(BridgeError::Disconnected(message));
         };
         if command_tx
             .send(GatewayToAgentMessage::TaskPlayAudioFinish {
@@ -434,9 +474,10 @@ impl AgentRegistry {
             .is_err()
         {
             self.remove_task(task_id).await;
-            return Err(BridgeError::Disconnected(format!(
-                "failed to deliver play_audio finish for task {task_id}"
-            )));
+            let message = format!("failed to deliver play_audio finish for task {task_id}");
+            self.resolve_task_waiter(task_id, Err(BridgeError::Disconnected(message.clone())))
+                .await;
+            return Err(BridgeError::Disconnected(message));
         }
         Ok(())
     }
@@ -522,6 +563,17 @@ impl AgentRegistry {
                     AgentTaskState::Finished | AgentTaskState::Failed
                 ) {
                     self.remove_task(&task_id).await;
+                    let result = if matches!(payload.state, AgentTaskState::Finished) {
+                        Ok(payload.clone())
+                    } else {
+                        Err(BridgeError::Unavailable(
+                            payload
+                                .message
+                                .clone()
+                                .unwrap_or_else(|| "play_audio task failed".to_string()),
+                        ))
+                    };
+                    self.resolve_task_waiter(&task_id, result).await;
                 }
             }
             AgentToGatewayMessage::Pong { .. } => {
@@ -808,6 +860,10 @@ pub async fn handle_agent_connection(
         .map_err(|_| BridgeError::Disconnected("agent writer closed".to_string()))?;
 
     let mut writer_result = None;
+    let mut heartbeat = tokio::time::interval(AGENT_HEARTBEAT_INTERVAL);
+    heartbeat.tick().await; // consume immediate first tick
+    let mut last_recv = tokio::time::Instant::now();
+
     loop {
         tokio::select! {
             frame = source.next() => {
@@ -817,6 +873,7 @@ pub async fn handle_agent_connection(
                 let frame = frame.map_err(|error| {
                     BridgeError::Io(format!("read agent frame failed: {error}"))
                 })?;
+                last_recv = tokio::time::Instant::now();
                 match frame {
                     Message::Text(text) => {
                         let message = serde_json::from_str::<AgentToGatewayMessage>(&text)
@@ -838,6 +895,22 @@ pub async fn handle_agent_connection(
                     Message::Close(_) => break,
                     Message::Pong(_) | Message::Binary(_) | Message::Frame(_) => {}
                 }
+            }
+            _ = heartbeat.tick() => {
+                if last_recv.elapsed() > AGENT_HEARTBEAT_TIMEOUT {
+                    warn!(
+                        "agent {agent_id} heartbeat timeout ({:?} since last frame); dropping connection",
+                        last_recv.elapsed()
+                    );
+                    break;
+                }
+                // Send an application-level ping to the agent so it knows we
+                // are still here and to exercise the write path.
+                let _ = command_tx
+                    .send(GatewayToAgentMessage::Ping {
+                        payload: AgentEmptyPayload {},
+                    })
+                    .await;
             }
             result = &mut writer => {
                 writer_result = Some(result);

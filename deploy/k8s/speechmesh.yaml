@@ -28,8 +28,21 @@ spec:
             - agent
             - --asr-provider-id
             - apple.asr
+            - --tts-provider
+            - mini-max-http
             - --agent-shared-secret
             - change-me
+          env:
+            - name: MINIMAX_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: speechmesh-minimax
+                  key: MINIMAX_API_KEY
+            - name: MINIMAX_GROUP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: speechmesh-minimax
+                  key: MINIMAX_GROUP_ID
           ports:
             - name: ws
               containerPort: 8765
@@ -76,8 +89,8 @@ metadata:
   annotations:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "86400"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "86400"
 spec:
   ingressClassName: nginx
   rules:

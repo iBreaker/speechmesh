@@ -20,6 +20,7 @@ speechmesh-transport = { path = "../transport" }
 speechmesh-tts = { path = "../tts" }
 thiserror.workspace = true
 tokio.workspace = true
+socket2 = "0.6"
 tokio-tungstenite.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

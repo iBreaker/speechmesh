@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use base64::Engine as _;
@@ -17,6 +18,7 @@ use speechmesh_transport::{
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
@@ -24,12 +26,13 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{error, info, warn};
 
 use crate::agent::{
-    AgentRegistry, AgentSnapshotFilter, PlayAudioRouteRequest,
-    handle_agent_connection,
+    AgentRegistry, AgentSnapshotFilter, PlayAudioRouteRequest, handle_agent_connection,
 };
 use crate::asr_bridge::{BridgeAsrEvent, BridgeAsrSessionHandle, SharedAsrBridge};
 use crate::bridge_support::BridgeError;
 use crate::tts_bridge::{BridgeTtsEvent, BridgeTtsSessionHandle, SharedTtsBridge};
+
+const CONTROL_PLAY_AUDIO_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -53,6 +56,11 @@ pub async fn run_server(
 
     loop {
         let (stream, peer) = listener.accept().await.context("accept failed")?;
+        if let Err(error) =
+            crate::tcp_keepalive::configure(&stream, crate::tcp_keepalive::DEFAULT_INTERVAL)
+        {
+            warn!("failed to set TCP keepalive for {peer}: {error}");
+        }
         let asr = asr_bridge.clone();
         let tts = tts_bridge.clone();
         let registry = agent_registry.clone();
@@ -173,11 +181,7 @@ async fn handle_control_websocket(
                 }
             }
             Message::Ping(_) => {
-                send_control_message(
-                    &mut websocket,
-                    ControlResponse::Pong {},
-                )
-                .await?;
+                send_control_message(&mut websocket, ControlResponse::Pong {}).await?;
             }
             Message::Binary(_) => {
                 send_control_error(
@@ -215,7 +219,8 @@ async fn handle_control_play_audio(
         ));
     }
 
-    let routed_agent_id = agent_registry
+    let task_waiter = agent_registry.subscribe_task_waiter(task_id.clone()).await;
+    let routed_agent_id = match agent_registry
         .route_play_audio_start(PlayAudioRouteRequest {
             task_id: task_id.clone(),
             device_id: payload.device_id,
@@ -223,7 +228,14 @@ async fn handle_control_play_audio(
             agent_id: payload.agent_id,
             format: payload.format,
         })
-        .await?;
+        .await
+    {
+        Ok(agent_id) => agent_id,
+        Err(error) => {
+            agent_registry.remove_task_waiter(&task_id).await;
+            return Err(error);
+        }
+    };
 
     let chunk_size = payload
         .chunk_size_bytes
@@ -237,6 +249,22 @@ async fn handle_control_play_audio(
             .await?;
     }
     agent_registry.route_play_audio_finish(&task_id).await?;
+
+    match timeout(CONTROL_PLAY_AUDIO_TIMEOUT, task_waiter).await {
+        Ok(Ok(Ok(_))) => {}
+        Ok(Ok(Err(error))) => return Err(error),
+        Ok(Err(_)) => {
+            return Err(BridgeError::Disconnected(format!(
+                "task waiter dropped before playback completed: {task_id}"
+            )));
+        }
+        Err(_) => {
+            agent_registry.remove_task_waiter(&task_id).await;
+            return Err(BridgeError::Unavailable(format!(
+                "timed out waiting for playback completion: {task_id}"
+            )));
+        }
+    }
 
     send_control_message(
         websocket,

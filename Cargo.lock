@@ -1321,6 +1321,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "socket2",
  "speechmesh-asr",
  "speechmesh-bridges",
  "speechmesh-core",

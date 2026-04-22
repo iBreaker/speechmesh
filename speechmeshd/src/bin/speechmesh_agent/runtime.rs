@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -8,15 +9,15 @@ use anyhow::{Context, Result};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
 use speechmesh_core::{AudioEncoding, AudioFormat, CapabilityDomain};
 use speechmeshd::agent::{
     AgentDeviceIdentity, AgentEmptyPayload, AgentErrorPayload, AgentHelloPayload, AgentKind,
     AgentSessionEndedPayload, AgentTaskState, AgentTaskStatusPayload, AgentToGatewayMessage,
     AgentUpdateStatus, GatewayToAgentMessage,
 };
-use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{Child, ChildStderr, ChildStdin, Command};
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -55,13 +56,30 @@ struct LocalAutoUpdateState {
 #[derive(Default)]
 struct TaskTracker {
     play_audio_tasks: HashMap<String, PlaybackTask>,
+    failed_play_audio_starts: HashSet<String>,
 }
 
 struct PlaybackTask {
     child: Child,
     stdin: ChildStdin,
+    stderr: Option<ChildStderr>,
     chunk_count: usize,
     byte_count: usize,
+}
+
+const PLAYBACK_FINISH_TIMEOUT: Duration = Duration::from_secs(20);
+const PLAYBACK_CMD_ENV: &str = "SPEECHMESH_PLAYBACK_CMD";
+
+/// Interval between agent-initiated WebSocket pings.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+/// If no frame (data or pong) is received within this window, treat the
+/// connection as dead and reconnect.
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
+
+enum PlaybackLauncher {
+    ShellCommand(String),
+    Ffplay(String),
+    Mpv(String),
 }
 
 pub async fn run_forever(config: AgentRuntimeConfig) -> Result<()> {
@@ -78,6 +96,24 @@ async fn run_once(config: &AgentRuntimeConfig) -> Result<()> {
     let (websocket, response) = connect_async(&config.gateway_url)
         .await
         .with_context(|| format!("failed to connect to gateway {}", config.gateway_url))?;
+
+    // Enable TCP keepalive on the underlying socket to prevent
+    // NAT/VPN/firewall middleboxes from killing idle connections.
+    if let tokio_tungstenite::MaybeTlsStream::Rustls(tls_stream) = websocket.get_ref() {
+        let tcp = tls_stream.get_ref().0;
+        if let Err(e) =
+            speechmeshd::tcp_keepalive::configure(tcp, speechmeshd::tcp_keepalive::DEFAULT_INTERVAL)
+        {
+            warn!("failed to set TCP keepalive: {e}");
+        }
+    } else if let tokio_tungstenite::MaybeTlsStream::Plain(tcp) = websocket.get_ref() {
+        if let Err(e) =
+            speechmeshd::tcp_keepalive::configure(tcp, speechmeshd::tcp_keepalive::DEFAULT_INTERVAL)
+        {
+            warn!("failed to set TCP keepalive: {e}");
+        }
+    }
+
     info!(
         "device agent {} connected to {} status={} device_id={}",
         config.agent_id,
@@ -126,24 +162,55 @@ async fn run_once(config: &AgentRuntimeConfig) -> Result<()> {
 
     wait_hello_ok(&mut source).await?;
 
-    while let Some(frame) = source.next().await {
-        let frame = frame.context("failed reading gateway frame")?;
-        match frame {
-            Message::Text(text) => {
-                let inbound: GatewayToAgentMessage =
-                    serde_json::from_str(&text).context("invalid gateway /agent payload")?;
-                handle_gateway_message(inbound, &out_tx, &mut task_tracker).await?;
+    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    heartbeat.tick().await; // consume the immediate first tick
+    let mut last_recv = tokio::time::Instant::now();
+
+    loop {
+        tokio::select! {
+            frame = source.next() => {
+                let Some(frame) = frame else { break };
+                let frame = frame.context("failed reading gateway frame")?;
+                last_recv = tokio::time::Instant::now();
+                match frame {
+                    Message::Text(text) => {
+                        let inbound: GatewayToAgentMessage =
+                            serde_json::from_str(&text).context("invalid gateway /agent payload")?;
+                        handle_gateway_message(inbound, &out_tx, &mut task_tracker).await?;
+                    }
+                    Message::Ping(_) => {
+                        out_tx
+                            .send(AgentToGatewayMessage::Pong {
+                                payload: AgentEmptyPayload {},
+                            })
+                            .await
+                            .context("agent writer channel closed while sending pong")?;
+                    }
+                    Message::Close(_) => break,
+                    Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}
+                }
             }
-            Message::Ping(_) => {
-                out_tx
+            _ = heartbeat.tick() => {
+                if last_recv.elapsed() > HEARTBEAT_TIMEOUT {
+                    warn!(
+                        "no data received for {:?}; treating connection as dead",
+                        last_recv.elapsed()
+                    );
+                    break;
+                }
+                // Send an application-level ping so the gateway knows we are alive,
+                // and so we exercise the write path to detect broken pipes early.
+                if out_tx
                     .send(AgentToGatewayMessage::Pong {
                         payload: AgentEmptyPayload {},
                     })
                     .await
-                    .context("agent writer channel closed while sending pong")?;
+                    .is_err()
+                {
+                    break;
+                }
+                debug!("heartbeat ping sent");
             }
-            Message::Close(_) => break,
-            Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}
         }
     }
 
@@ -248,6 +315,7 @@ async fn handle_gateway_message(
             } else {
                 match start_playback_task(&payload.format).await {
                     Ok(task) => {
+                        task_tracker.failed_play_audio_starts.remove(&task_id);
                         task_tracker.play_audio_tasks.insert(task_id.clone(), task);
                         info!("play_audio started task_id={task_id}");
                         out_tx
@@ -264,6 +332,10 @@ async fn handle_gateway_message(
                             .context("agent writer channel closed while sending task started")?;
                     }
                     Err(error) => {
+                        warn!("play_audio failed to start task_id={task_id}: {error:#}");
+                        task_tracker
+                            .failed_play_audio_starts
+                            .insert(task_id.clone());
                         out_tx
                             .send(AgentToGatewayMessage::TaskStatus {
                                 task_id,
@@ -315,6 +387,12 @@ async fn handle_gateway_message(
                     task.chunk_count,
                     payload.data_base64.len()
                 );
+            } else if task_tracker.failed_play_audio_starts.contains(&task_id) {
+                debug!(
+                    "dropping play_audio chunk after start failure task_id={} bytes(base64)={}",
+                    task_id,
+                    payload.data_base64.len()
+                );
             } else {
                 out_tx
                     .send(AgentToGatewayMessage::TaskStatus {
@@ -330,16 +408,18 @@ async fn handle_gateway_message(
         }
         GatewayToAgentMessage::TaskPlayAudioFinish { task_id, .. } => {
             let task = task_tracker.play_audio_tasks.remove(&task_id);
+            let finish_after_start_failure = task_tracker.failed_play_audio_starts.remove(&task_id);
             let (state, message) = if let Some(task) = task {
                 let chunk_count = task.chunk_count;
                 let byte_count = task.byte_count;
                 let mut child = task.child;
                 let mut stdin = task.stdin;
+                let stderr = task.stderr;
                 let _ = stdin.shutdown().await;
                 drop(stdin);
 
-                match child.wait().await {
-                    Ok(status) if status.success() => {
+                match tokio::time::timeout(PLAYBACK_FINISH_TIMEOUT, child.wait()).await {
+                    Ok(Ok(status)) if status.success() => {
                         info!(
                             "play_audio finished task_id={} chunks={} bytes={}",
                             task_id, chunk_count, byte_count
@@ -352,25 +432,50 @@ async fn handle_gateway_message(
                             )),
                         )
                     }
-                    Ok(status) => {
-                        warn!("play_audio failed task_id={task_id}: player exited with {status}");
+                    Ok(Ok(status)) => {
+                        let stderr_summary = collect_child_stderr(stderr).await;
+                        warn!(
+                            "play_audio failed task_id={task_id}: player exited with {status}; stderr={stderr_summary}"
+                        );
                         (
                             AgentTaskState::Failed,
                             Some(format!(
-                                "local playback process exited with status {status}"
+                                "local playback process exited with status {status}; stderr: {stderr_summary}"
                             )),
                         )
                     }
-                    Err(error) => {
-                        warn!("play_audio failed task_id={task_id}: wait error: {error}");
+                    Ok(Err(error)) => {
+                        let stderr_summary = collect_child_stderr(stderr).await;
+                        warn!(
+                            "play_audio failed task_id={task_id}: wait error: {error}; stderr={stderr_summary}"
+                        );
                         (
                             AgentTaskState::Failed,
                             Some(format!(
-                                "failed waiting for local playback process: {error}"
+                                "failed waiting for local playback process: {error}; stderr: {stderr_summary}"
+                            )),
+                        )
+                    }
+                    Err(_) => {
+                        let _ = child.start_kill();
+                        let _ = child.wait().await;
+                        let stderr_summary = collect_child_stderr(stderr).await;
+                        warn!(
+                            "play_audio timed out task_id={task_id} after {:?}; stderr={stderr_summary}",
+                            PLAYBACK_FINISH_TIMEOUT
+                        );
+                        (
+                            AgentTaskState::Failed,
+                            Some(format!(
+                                "local playback timed out after {:?}; stderr: {stderr_summary}",
+                                PLAYBACK_FINISH_TIMEOUT
                             )),
                         )
                     }
                 }
+            } else if finish_after_start_failure {
+                debug!("dropping play_audio finish after start failure task_id={task_id}");
+                return Ok(());
             } else {
                 (
                     AgentTaskState::Failed,
@@ -421,37 +526,142 @@ fn default_update_status_path() -> Option<PathBuf> {
 }
 
 async fn start_playback_task(format: &Option<AudioFormat>) -> Result<PlaybackTask> {
-    let mut command = Command::new("ffplay");
-    command
-        .arg("-nodisp")
-        .arg("-autoexit")
-        .arg("-loglevel")
-        .arg("error");
+    let launcher = resolve_playback_launcher();
+    let mut command = match launcher {
+        PlaybackLauncher::ShellCommand(shell_cmd) => {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-lc").arg(shell_cmd);
+            cmd
+        }
+        PlaybackLauncher::Ffplay(ffplay_path) => {
+            let mut cmd = Command::new(ffplay_path);
+            cmd.arg("-nodisp")
+                .arg("-autoexit")
+                .arg("-loglevel")
+                .arg("error");
+            if let Some(expected) = ffplay_input_format(format.as_ref())? {
+                cmd.arg("-f").arg(expected);
+            }
+            cmd.arg("-i").arg("pipe:0");
+            cmd
+        }
+        PlaybackLauncher::Mpv(mpv_path) => {
+            let mut cmd = Command::new(mpv_path);
+            // Keep this mode simple for mobile hosts where ffplay is unavailable.
+            cmd.arg("--no-config")
+                .arg("--no-terminal")
+                .arg("--really-quiet")
+                .arg("--no-video")
+                .arg("--")
+                .arg("-");
+            cmd
+        }
+    };
 
-    if let Some(expected) = ffplay_input_format(format.as_ref())? {
-        command.arg("-f").arg(expected);
-    }
-
-    command
-        .arg("-i")
-        .arg("pipe:0")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    command.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
 
     let mut child = command
         .spawn()
-        .context("failed to spawn ffplay (is ffmpeg installed and on PATH?)")?;
+        .context(
+            "failed to spawn local playback command; set SPEECHMESH_PLAYBACK_CMD or install ffplay/mpv",
+        )?;
     let stdin = child
         .stdin
         .take()
-        .context("ffplay stdin unavailable after spawn")?;
+        .context("playback process stdin unavailable after spawn")?;
+    let stderr = child.stderr.take();
     Ok(PlaybackTask {
         child,
         stdin,
+        stderr,
         chunk_count: 0,
         byte_count: 0,
     })
+}
+
+async fn collect_child_stderr(stderr: Option<ChildStderr>) -> String {
+    let Some(mut stderr) = stderr else {
+        return "stderr unavailable".to_string();
+    };
+    let mut bytes = Vec::new();
+    match tokio::time::timeout(
+        Duration::from_millis(500),
+        tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut bytes),
+    )
+    .await
+    {
+        Ok(Ok(_)) => summarize_stderr(&bytes),
+        Ok(Err(error)) => format!("failed to read stderr: {error}"),
+        Err(_) => "stderr read timed out".to_string(),
+    }
+}
+
+fn summarize_stderr(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return "(empty)".to_string();
+    }
+    let text = String::from_utf8_lossy(bytes);
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return "(empty)".to_string();
+    }
+    const MAX_LEN: usize = 240;
+    if normalized.len() > MAX_LEN {
+        format!("{}...", &normalized[..MAX_LEN])
+    } else {
+        normalized
+    }
+}
+
+fn resolve_ffplay_path() -> String {
+    if cfg!(target_os = "macos") {
+        for candidate in ["/opt/homebrew/bin/ffplay", "/usr/local/bin/ffplay"] {
+            if fs::metadata(candidate).is_ok() {
+                return candidate.to_string();
+            }
+        }
+    }
+    "ffplay".to_string()
+}
+
+fn resolve_playback_launcher() -> PlaybackLauncher {
+    if let Ok(raw) = std::env::var(PLAYBACK_CMD_ENV) {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return PlaybackLauncher::ShellCommand(trimmed.to_string());
+        }
+    }
+    if let Some(path) = resolve_command_path(&resolve_ffplay_path()) {
+        return PlaybackLauncher::Ffplay(path);
+    }
+    if let Some(path) = resolve_command_path("mpv") {
+        return PlaybackLauncher::Mpv(path);
+    }
+    PlaybackLauncher::Ffplay(resolve_ffplay_path())
+}
+
+fn resolve_command_path(command: &str) -> Option<String> {
+    let as_path = Path::new(command);
+    if as_path.is_absolute() {
+        if fs::metadata(as_path).is_ok() {
+            return Some(command.to_string());
+        }
+        return None;
+    }
+    if command.contains('/') {
+        if fs::metadata(as_path).is_ok() {
+            return Some(command.to_string());
+        }
+        return None;
+    }
+    let path_var = std::env::var_os("PATH")?;
+    for base in std::env::split_paths(&path_var) {
+        let candidate = base.join(command);
+        if fs::metadata(&candidate).is_ok() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+    None
 }
 
 fn ffplay_input_format(format: Option<&AudioFormat>) -> Result<Option<&'static str>> {
