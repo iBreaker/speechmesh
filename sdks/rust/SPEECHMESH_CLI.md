@@ -41,7 +41,7 @@ profiles:
       control_url: wss://speechmesh.svc.lan.breaker.host/control
       agent_url: wss://speechmesh.svc.lan.breaker.host/agent
     client_name: speechmesh
-    shared_secret: speechmesh-device-20260405-6c0e7f4b
+    shared_secret: change-me
     defaults:
       device: mac03
       provider: minimax.tts
