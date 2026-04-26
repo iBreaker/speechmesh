@@ -6,8 +6,8 @@ use speechmesh_core::{
 use tokio::sync::mpsc;
 
 use super::{
-    AsrBridge, BridgeAsrEvent, BridgeAsrSessionHandle, BridgeCommand,
-    asr_descriptor_with_io_modes, requested_asr_input_mode, requested_asr_output_mode,
+    AsrBridge, BridgeAsrEvent, BridgeAsrSessionHandle, BridgeCommand, asr_descriptor_with_io_modes,
+    requested_asr_input_mode, requested_asr_output_mode,
 };
 use crate::BridgeError;
 

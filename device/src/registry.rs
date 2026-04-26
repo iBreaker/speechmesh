@@ -193,10 +193,7 @@ impl<Cmd: Send + Clone + 'static> AgentRegistry<Cmd> {
     }
 
     /// 注册 agent，返回被替换的旧 agent 产生的孤儿任务
-    pub async fn register_agent(
-        &self,
-        agent: RegisteredAgent<Cmd>,
-    ) -> AgentRemovalResult {
+    pub async fn register_agent(&self, agent: RegisteredAgent<Cmd>) -> AgentRemovalResult {
         let mut inner = self.inner.lock().await;
         let result = if inner.agents.contains_key(&agent.agent_id) {
             warn!(
@@ -299,10 +296,7 @@ impl<Cmd: Send + Clone + 'static> AgentRegistry<Cmd> {
     }
 
     /// 获取 agent 的 command_tx
-    pub async fn agent_command_tx(
-        &self,
-        agent_id: &str,
-    ) -> Option<tokio::sync::mpsc::Sender<Cmd>> {
+    pub async fn agent_command_tx(&self, agent_id: &str) -> Option<tokio::sync::mpsc::Sender<Cmd>> {
         let inner = self.inner.lock().await;
         inner
             .agents
@@ -376,9 +370,7 @@ mod tests {
         let found = registry.select_speaker_agent(None, None).await;
         assert!(found.is_some());
 
-        let found = registry
-            .select_speaker_agent(Some("device-1"), None)
-            .await;
+        let found = registry.select_speaker_agent(Some("device-1"), None).await;
         assert!(found.is_some());
 
         let found = registry

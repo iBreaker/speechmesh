@@ -15,8 +15,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 use speechmesh_core::StreamMode;
-use speechmesh_tts::{AudioChunk, StreamRequest, SynthesisInputKind, VoiceDescriptor};
 use speechmesh_transport::VoiceListRequest;
+use speechmesh_tts::{AudioChunk, StreamRequest, SynthesisInputKind, VoiceDescriptor};
 use tokio::sync::mpsc;
 
 use crate::BridgeError;
@@ -151,9 +151,7 @@ pub(crate) fn requested_tts_input_mode(options: &speechmesh_tts::SynthesisOption
     )
 }
 
-pub(crate) fn requested_tts_output_mode(
-    options: &speechmesh_tts::SynthesisOptions,
-) -> StreamMode {
+pub(crate) fn requested_tts_output_mode(options: &speechmesh_tts::SynthesisOptions) -> StreamMode {
     if let Some(explicit) = options.provider_options.get("output_mode") {
         return parse_stream_mode(Some(explicit), StreamMode::Buffered);
     }

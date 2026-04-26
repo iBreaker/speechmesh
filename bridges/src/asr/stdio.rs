@@ -170,10 +170,8 @@ pub(crate) async fn run_bridge_writer<W>(
     }
 }
 
-pub(crate) async fn run_bridge_reader<R>(
-    reader_source: R,
-    event_tx: mpsc::Sender<BridgeAsrEvent>,
-) where
+pub(crate) async fn run_bridge_reader<R>(reader_source: R, event_tx: mpsc::Sender<BridgeAsrEvent>)
+where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut reader = BufReader::new(reader_source).lines();

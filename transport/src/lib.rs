@@ -17,8 +17,8 @@ pub use agent::{
 };
 pub use control::{
     ControlAgentStatusPayload, ControlAgentStatusResultPayload, ControlDevicesListPayload,
-    ControlErrorPayload, ControlPlayAudioAcceptedPayload, ControlPlayAudioPayload,
-    ControlRequest, ControlResponse,
+    ControlErrorPayload, ControlPlayAudioAcceptedPayload, ControlPlayAudioPayload, ControlRequest,
+    ControlResponse,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

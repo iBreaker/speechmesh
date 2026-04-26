@@ -3,8 +3,8 @@ use speechmesh_core::{
     AudioEncoding, AudioFormat, Capability, CapabilityDomain, ProviderDescriptor, RuntimeMode,
     SessionId,
 };
-use speechmesh_tts::{AudioChunk, StreamRequest, TtsSession, VoiceDescriptor};
 use speechmesh_transport::VoiceListRequest;
+use speechmesh_tts::{AudioChunk, StreamRequest, TtsSession, VoiceDescriptor};
 use tokio::sync::mpsc;
 
 use super::{

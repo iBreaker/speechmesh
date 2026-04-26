@@ -67,10 +67,7 @@ impl<Cmd: Send + Clone + 'static> AgentRegistry<Cmd> {
                 }
             } else {
                 // 旧版 agent 没有 device_info，如果 device_id 匹配就返回
-                let agent_device_id = snapshot
-                    .device
-                    .as_ref()
-                    .map(|d| d.device_id.as_str());
+                let agent_device_id = snapshot.device.as_ref().map(|d| d.device_id.as_str());
                 if agent_device_id == Some(device_id.as_str()) {
                     return self.get_registered_agent(&snapshot.agent_id).await;
                 }
@@ -112,10 +109,7 @@ impl<Cmd: Send + Clone + 'static> AgentRegistry<Cmd> {
                 }
             } else {
                 // 旧版：假设默认全双工，Output 和 Input 都匹配
-                let agent_device_id = snapshot
-                    .device
-                    .as_ref()
-                    .map(|d| d.device_id.as_str());
+                let agent_device_id = snapshot.device.as_ref().map(|d| d.device_id.as_str());
                 if agent_device_id == Some(device_id.as_str()) {
                     if let Some(agent) = self.get_registered_agent(&snapshot.agent_id).await {
                         return Some(RouteMatch {
@@ -137,10 +131,7 @@ mod tests {
     use crate::registry::{AgentDeviceIdentity, AgentKind, RegisteredAgent};
     use speechmesh_core::CapabilityDomain;
 
-    fn make_agent_with_device_info(
-        agent_id: &str,
-        device: Device,
-    ) -> RegisteredAgent<String> {
+    fn make_agent_with_device_info(agent_id: &str, device: Device) -> RegisteredAgent<String> {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         RegisteredAgent {
             agent_id: agent_id.to_string(),
@@ -258,10 +249,7 @@ mod tests {
 
         // 查找输出端点
         let result = registry
-            .select_by_direction(
-                &DeviceId("d2".to_string()),
-                EndpointDirection::Output,
-            )
+            .select_by_direction(&DeviceId("d2".to_string()), EndpointDirection::Output)
             .await;
         assert!(result.is_some());
         let m = result.unwrap();
@@ -269,10 +257,7 @@ mod tests {
 
         // 查找输入端点
         let result = registry
-            .select_by_direction(
-                &DeviceId("d2".to_string()),
-                EndpointDirection::Input,
-            )
+            .select_by_direction(&DeviceId("d2".to_string()), EndpointDirection::Input)
             .await;
         assert!(result.is_some());
         let m = result.unwrap();

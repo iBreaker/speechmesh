@@ -558,13 +558,14 @@ async fn start_playback_task(format: &Option<AudioFormat>) -> Result<PlaybackTas
         }
     };
 
-    command.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
 
-    let mut child = command
-        .spawn()
-        .context(
-            "failed to spawn local playback command; set SPEECHMESH_PLAYBACK_CMD or install ffplay/mpv",
-        )?;
+    let mut child = command.spawn().context(
+        "failed to spawn local playback command; set SPEECHMESH_PLAYBACK_CMD or install ffplay/mpv",
+    )?;
     let stdin = child
         .stdin
         .take()

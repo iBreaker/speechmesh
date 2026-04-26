@@ -34,7 +34,10 @@ struct Cli {
     file: PathBuf,
     #[arg(long, help = "Optional explicit task id")]
     task_id: Option<String>,
-    #[arg(long, help = "Optional target device id or host:output target (for example: mac01 or mac01:airpod)")]
+    #[arg(
+        long,
+        help = "Optional target device id or host:output target (for example: mac01 or mac01:airpod)"
+    )]
     device_id: Option<String>,
     #[arg(long, help = "Optional target agent id")]
     agent_id: Option<String>,
@@ -134,10 +137,9 @@ async fn main() -> Result<()> {
         let frame = frame.context("failed to read /control response frame")?;
         match frame {
             Message::Text(text) => {
-                let response: ControlResponse =
-                    serde_json::from_str(&text).map_err(|error| {
-                        anyhow::anyhow!("unexpected /control response ({error}): {text}")
-                    })?;
+                let response: ControlResponse = serde_json::from_str(&text).map_err(|error| {
+                    anyhow::anyhow!("unexpected /control response ({error}): {text}")
+                })?;
                 match response {
                     ControlResponse::PlayAudioAccepted { payload } => {
                         println!("{}", serde_json::to_string_pretty(&payload)?);
