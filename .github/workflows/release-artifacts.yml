@@ -1,5 +1,9 @@
 name: Release Artifacts
 
+concurrency:
+  group: release-artifacts-${{ github.event_name }}-${{ github.ref_name }}-${{ github.event.inputs.channel || 'stable' }}
+  cancel-in-progress: false
+
 'on':
   workflow_dispatch:
     inputs:
@@ -206,16 +210,29 @@ jobs:
         run: |
           set -euo pipefail
           channel="${{ steps.meta.outputs.channel }}"
+          tag="${{ steps.meta.outputs.tag }}"
+          manifest_src="dist/release-manifests/${channel}.json"
+          target_path="releases/${channel}.json"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout main
-          mkdir -p releases
-          cp "dist/release-manifests/${channel}.json" "releases/${channel}.json"
-          git add "releases/${channel}.json"
-          if git diff --cached --quiet -- "releases/${channel}.json"; then
-            echo "manifest unchanged"
-            exit 0
-          fi
-          git commit -m "chore: update ${channel} release manifest for ${{ steps.meta.outputs.tag }}"
-          git push origin HEAD:main
+
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git checkout -B main origin/main
+            mkdir -p releases
+            cp "${manifest_src}" "${target_path}"
+            git add "${target_path}"
+            if git diff --cached --quiet -- "${target_path}"; then
+              echo "manifest unchanged"
+              exit 0
+            fi
+            git commit -m "chore: update ${channel} release manifest for ${tag}"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "push rejected on attempt ${attempt}; retrying after refreshing origin/main"
+            git reset --hard origin/main
+          done
+
+          echo "failed to publish ${target_path} after multiple retries" >&2
+          exit 1
