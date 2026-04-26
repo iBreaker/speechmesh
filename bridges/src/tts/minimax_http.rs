@@ -10,8 +10,8 @@ use speechmesh_core::{
     AudioEncoding, AudioFormat, Capability, CapabilityDomain, ProviderDescriptor, RuntimeMode,
     SessionId, StreamMode,
 };
-use speechmesh_tts::{AudioChunk, StreamRequest, SynthesisInputKind, TtsSession, VoiceDescriptor};
 use speechmesh_transport::VoiceListRequest;
+use speechmesh_tts::{AudioChunk, StreamRequest, SynthesisInputKind, TtsSession, VoiceDescriptor};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{
     connect_async,
@@ -19,10 +19,10 @@ use tokio_tungstenite::{
 };
 
 use super::{
-    BridgeTtsCommand, BridgeTtsEvent, BridgeTtsSessionHandle, TtsBridge,
-    audio_encoding_from_name, decode_minimax_audio, emit_audio_chunks,
-    ensure_tts_modes_supported, filter_reserved_provider_options, normalize_output_format_name,
-    requested_tts_input_mode, requested_tts_output_mode,
+    BridgeTtsCommand, BridgeTtsEvent, BridgeTtsSessionHandle, TtsBridge, audio_encoding_from_name,
+    decode_minimax_audio, emit_audio_chunks, ensure_tts_modes_supported,
+    filter_reserved_provider_options, normalize_output_format_name, requested_tts_input_mode,
+    requested_tts_output_mode,
 };
 use crate::BridgeError;
 
@@ -295,8 +295,7 @@ impl TtsBridge for MiniMaxHttpTtsBridge {
                                         })
                                         .await;
                                 }
-                                let _ =
-                                    event_tx.send(BridgeTtsEvent::Ended { reason: None }).await;
+                                let _ = event_tx.send(BridgeTtsEvent::Ended { reason: None }).await;
                             }
                             Err(error) => {
                                 let _ = event_tx

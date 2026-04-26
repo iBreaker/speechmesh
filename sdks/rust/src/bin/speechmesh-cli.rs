@@ -6,9 +6,9 @@ use std::process::Stdio;
 use std::{collections::HashMap, env};
 use std::{fs, io};
 
-use anyhow::{anyhow, bail, Context, Result};
-use base64::engine::general_purpose::STANDARD as BASE64;
+use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -769,7 +769,10 @@ async fn run_versions(cli: &RuntimeConfig, _args: VersionsArgs) -> Result<()> {
                 .update_status
                 .as_ref()
                 .and_then(|status| status.target_version.clone()),
-            update_applied: agent.update_status.as_ref().and_then(|status| status.applied),
+            update_applied: agent
+                .update_status
+                .as_ref()
+                .and_then(|status| status.applied),
             restart_performed: agent
                 .update_status
                 .as_ref()
@@ -785,7 +788,12 @@ async fn run_versions(cli: &RuntimeConfig, _args: VersionsArgs) -> Result<()> {
         left.device_id
             .as_deref()
             .unwrap_or(left.agent_id.as_str())
-            .cmp(right.device_id.as_deref().unwrap_or(right.agent_id.as_str()))
+            .cmp(
+                right
+                    .device_id
+                    .as_deref()
+                    .unwrap_or(right.agent_id.as_str()),
+            )
     });
 
     if cli.json {

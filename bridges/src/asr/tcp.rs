@@ -1,16 +1,14 @@
 use async_trait::async_trait;
 use speechmesh_asr::{AsrSession, StreamRequest};
-use speechmesh_core::{
-    Capability, CapabilityDomain, ProviderDescriptor, RuntimeMode, SessionId,
-};
+use speechmesh_core::{Capability, CapabilityDomain, ProviderDescriptor, RuntimeMode, SessionId};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
-use super::{
-    AsrBridge, BridgeAsrEvent, BridgeAsrSessionHandle, BridgeCommand,
-    asr_descriptor_with_io_modes, requested_asr_input_mode, requested_asr_output_mode,
-};
 use super::stdio::{run_bridge_reader, run_bridge_writer};
+use super::{
+    AsrBridge, BridgeAsrEvent, BridgeAsrSessionHandle, BridgeCommand, asr_descriptor_with_io_modes,
+    requested_asr_input_mode, requested_asr_output_mode,
+};
 use crate::BridgeError;
 
 #[derive(Debug, Clone)]

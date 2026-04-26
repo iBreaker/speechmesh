@@ -2,7 +2,6 @@
 ///
 /// 定义 Control WebSocket 端点的通信协议。
 /// 用于外部工具向 Gateway 发送控制指令（如播放音频、查询设备等）。
-
 use serde::{Deserialize, Serialize};
 use speechmesh_core::AudioFormat;
 
@@ -17,9 +16,7 @@ pub enum ControlRequest {
     #[serde(rename = "devices.list")]
     DevicesList,
     #[serde(rename = "agent.status")]
-    AgentStatus {
-        payload: ControlAgentStatusPayload,
-    },
+    AgentStatus { payload: ControlAgentStatusPayload },
 }
 
 /// play_audio 请求的负载
@@ -58,9 +55,7 @@ pub enum ControlResponse {
         payload: ControlPlayAudioAcceptedPayload,
     },
     #[serde(rename = "devices.list")]
-    DevicesList {
-        payload: ControlDevicesListPayload,
-    },
+    DevicesList { payload: ControlDevicesListPayload },
     #[serde(rename = "agent.status")]
     AgentStatus {
         payload: ControlAgentStatusResultPayload,

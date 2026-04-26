@@ -2,7 +2,6 @@
 ///
 /// 定义 Agent 与 Gateway 之间的 WebSocket 通信协议。
 /// Agent 可以是 ASR 提供者、设备代理等。
-
 use std::fmt;
 
 use serde::{Deserialize, Serialize};

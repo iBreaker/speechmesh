@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use serde_json::Value;
 use speechmesh_core::{ProviderDescriptor, ProviderSelectionMode};
-use speechmesh_tts::{StreamRequest, VoiceDescriptor};
 use speechmesh_transport::VoiceListRequest;
+use speechmesh_tts::{StreamRequest, VoiceDescriptor};
 
 use super::{BridgeTtsSessionHandle, SharedTtsBridge, TtsBridge};
 use crate::BridgeError;
@@ -214,8 +214,8 @@ impl TtsBridge for CompositeTtsBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tts::tests::mock_request;
     use crate::tts::MockTtsBridge;
+    use crate::tts::tests::mock_request;
     use serde_json::json;
     use speechmesh_core::{Capability, ProviderSelectionMode};
     use speechmesh_tts::SynthesisOptions;

@@ -223,8 +223,8 @@ where
         .build()
         .context("failed to initialize tokio runtime")?;
     runtime.block_on(async move {
-        let release = resolve_manifest_release(&args.manifest_url, &args.channel, &current_target())
-            .await?;
+        let release =
+            resolve_manifest_release(&args.manifest_url, &args.channel, &current_target()).await?;
         let report = CheckUpdateReport {
             current_version: APP_VERSION.to_string(),
             status: compare_versions(APP_VERSION, &release.version),
@@ -237,8 +237,7 @@ where
         if args.json {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&report)
-                    .context("failed to encode update report")?
+                serde_json::to_string_pretty(&report).context("failed to encode update report")?
             );
         } else {
             println!("current: {}", report.current_version);
@@ -278,9 +277,15 @@ struct SelfUpdateArgs {
     sha256: Option<String>,
     #[arg(long, help = "Optional target version when using --asset-url directly")]
     version: Option<String>,
-    #[arg(long, help = "Download and verify only; do not replace the current binary")]
+    #[arg(
+        long,
+        help = "Download and verify only; do not replace the current binary"
+    )]
     dry_run: bool,
-    #[arg(long, help = "Allow replacing even if the target version is unchanged or older")]
+    #[arg(
+        long,
+        help = "Allow replacing even if the target version is unchanged or older"
+    )]
     force: bool,
     #[arg(long, value_enum, default_value_t = RestartMode::None, help = "Restart a managed service after replacing the binary")]
     restart_mode: RestartMode,
@@ -480,9 +485,7 @@ async fn run_auto_update_cycle(args: &AutoUpdateArgs) -> AutoUpdateCycleReport {
     let executable = args
         .binary_path
         .clone()
-        .unwrap_or_else(|| {
-            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("speechmesh"))
-        })
+        .unwrap_or_else(|| std::env::current_exe().unwrap_or_else(|_| PathBuf::from("speechmesh")))
         .display()
         .to_string();
 
@@ -674,7 +677,10 @@ async fn resolve_update_plan(args: &SelfUpdateArgs) -> Result<UpdatePlan> {
                 .clone()
                 .ok_or_else(|| anyhow!("--sha256 is required with --asset-url"))?;
             ResolvedUpdate {
-                version: args.version.clone().unwrap_or_else(|| "unknown".to_string()),
+                version: args
+                    .version
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 channel: args.channel.clone(),
                 url: asset_url.clone(),
                 sha256,
@@ -705,7 +711,9 @@ async fn resolve_manifest_release(
             notes_url: None,
             published_at: None,
         }),
-        UpdateManifestEnvelope::Rich(manifest) => select_manifest_release(manifest, requested_channel, target),
+        UpdateManifestEnvelope::Rich(manifest) => {
+            select_manifest_release(manifest, requested_channel, target)
+        }
     }
 }
 
@@ -734,10 +742,12 @@ fn select_manifest_release(
         .releases
         .into_iter()
         .filter_map(|release| {
-            let release_channel = release
-                .channel
-                .clone()
-                .unwrap_or_else(|| manifest.default_channel.clone().unwrap_or_else(|| DEFAULT_CHANNEL.to_string()));
+            let release_channel = release.channel.clone().unwrap_or_else(|| {
+                manifest
+                    .default_channel
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_CHANNEL.to_string())
+            });
             if release_channel.to_ascii_lowercase() != normalized_channel {
                 return None;
             }
@@ -787,7 +797,8 @@ fn select_manifest_release(
 }
 
 fn asset_matches_target(asset: &ManifestAsset, target: &ClientTarget) -> bool {
-    canonical_platform(&asset.platform) == target.platform && canonical_arch(&asset.arch) == target.arch
+    canonical_platform(&asset.platform) == target.platform
+        && canonical_arch(&asset.arch) == target.arch
 }
 
 fn compare_manifest_versions(left: &str, right: &str) -> std::cmp::Ordering {
@@ -825,9 +836,12 @@ async fn download_binary(url: &str) -> Result<Vec<u8>> {
 }
 
 fn replace_binary(target: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = target
-        .parent()
-        .ok_or_else(|| anyhow!("target binary has no parent directory: {}", target.display()))?;
+    let parent = target.parent().ok_or_else(|| {
+        anyhow!(
+            "target binary has no parent directory: {}",
+            target.display()
+        )
+    })?;
     let file_name = target
         .file_name()
         .ok_or_else(|| anyhow!("target binary has no file name: {}", target.display()))?
@@ -842,7 +856,10 @@ fn replace_binary(target: &Path, bytes: &[u8]) -> Result<()> {
 
     if backup_path.exists() {
         fs::remove_file(&backup_path).with_context(|| {
-            format!("failed to remove old backup binary {}", backup_path.display())
+            format!(
+                "failed to remove old backup binary {}",
+                backup_path.display()
+            )
         })?;
     }
     fs::rename(target, &backup_path)
@@ -936,7 +953,8 @@ fn restart_managed_service(mode: RestartMode, service_name: Option<&str>) -> Res
     match mode {
         RestartMode::None => Ok(()),
         RestartMode::Launchd => {
-            let label = service_name.ok_or_else(|| anyhow!("--service-name is required with --restart-mode launchd"))?;
+            let label = service_name
+                .ok_or_else(|| anyhow!("--service-name is required with --restart-mode launchd"))?;
             let uid = String::from_utf8(
                 Command::new("id")
                     .arg("-u")
@@ -956,7 +974,9 @@ fn restart_managed_service(mode: RestartMode, service_name: Option<&str>) -> Res
             Ok(())
         }
         RestartMode::SystemdUser => {
-            let service = service_name.ok_or_else(|| anyhow!("--service-name is required with --restart-mode systemd-user"))?;
+            let service = service_name.ok_or_else(|| {
+                anyhow!("--service-name is required with --restart-mode systemd-user")
+            })?;
             let status = Command::new("systemctl")
                 .args(["--user", "restart", service])
                 .status()
@@ -1062,7 +1082,8 @@ mod tests {
             platform: "macos".to_string(),
             arch: "aarch64".to_string(),
         };
-        let release = select_manifest_release(manifest, DEFAULT_CHANNEL, &target).expect("select release");
+        let release =
+            select_manifest_release(manifest, DEFAULT_CHANNEL, &target).expect("select release");
         assert_eq!(release.version, "0.1.2");
         assert_eq!(release.channel, DEFAULT_CHANNEL);
         assert_eq!(release.url, "https://example.com/stable-arm64");
@@ -1072,10 +1093,19 @@ mod tests {
 
     #[test]
     fn compare_versions_reports_update_states() {
-        assert_eq!(compare_versions("0.1.0", "0.2.0"), UpdateStatus::UpdateAvailable);
+        assert_eq!(
+            compare_versions("0.1.0", "0.2.0"),
+            UpdateStatus::UpdateAvailable
+        );
         assert_eq!(compare_versions("0.1.0", "0.1.0"), UpdateStatus::UpToDate);
-        assert_eq!(compare_versions("0.2.0", "0.1.0"), UpdateStatus::DowngradeAvailable);
-        assert_eq!(compare_versions("dev", "nightly"), UpdateStatus::VersionUnknown);
+        assert_eq!(
+            compare_versions("0.2.0", "0.1.0"),
+            UpdateStatus::DowngradeAvailable
+        );
+        assert_eq!(
+            compare_versions("dev", "nightly"),
+            UpdateStatus::VersionUnknown
+        );
     }
 
     #[test]
@@ -1136,10 +1166,7 @@ mod tests {
         assert_eq!(decoded.event, "checked");
         assert_eq!(decoded.status, "up_to_date");
         assert_eq!(decoded.current_version, "0.1.0");
-        assert_eq!(
-            decoded.target_version.as_deref(),
-            Some("0.1.0")
-        );
+        assert_eq!(decoded.target_version.as_deref(), Some("0.1.0"));
         assert_eq!(decoded.interval_secs, 300);
         assert_eq!(
             decoded.release_url.as_deref(),

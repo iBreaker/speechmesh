@@ -11,11 +11,11 @@ use speechmesh_core::{
 use tokio::sync::mpsc;
 
 use super::{
-    AsrBridge, BridgeAsrEvent, BridgeAsrSessionHandle, BridgeCommand,
-    asr_descriptor_with_io_modes, audio_mime_type, build_multipart_form_body,
-    default_audio_filename, encode_minimax_upload_audio, filter_reserved_provider_options,
-    provider_option_to_form_value, requested_asr_input_mode, requested_asr_output_mode,
-    seconds_to_ms, streaming_partial_trigger_bytes,
+    AsrBridge, BridgeAsrEvent, BridgeAsrSessionHandle, BridgeCommand, asr_descriptor_with_io_modes,
+    audio_mime_type, build_multipart_form_body, default_audio_filename,
+    encode_minimax_upload_audio, filter_reserved_provider_options, provider_option_to_form_value,
+    requested_asr_input_mode, requested_asr_output_mode, seconds_to_ms,
+    streaming_partial_trigger_bytes,
 };
 use crate::BridgeError;
 
@@ -141,8 +141,7 @@ impl AsrBridge for MiniMaxHttpAsrBridge {
                                 {
                                     return;
                                 }
-                                let _ =
-                                    event_tx.send(BridgeAsrEvent::Ended { reason: None }).await;
+                                let _ = event_tx.send(BridgeAsrEvent::Ended { reason: None }).await;
                             }
                             Err(error) => {
                                 let _ = event_tx

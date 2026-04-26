@@ -4,9 +4,7 @@ use async_trait::async_trait;
 use speechmesh_asr::StreamRequest;
 use speechmesh_core::{ProviderDescriptor, ProviderSelectionMode};
 
-use super::{
-    AsrBridge, BridgeAsrSessionHandle, SharedAsrBridge, has_enabled_capability,
-};
+use super::{AsrBridge, BridgeAsrSessionHandle, SharedAsrBridge, has_enabled_capability};
 use crate::BridgeError;
 
 #[derive(Clone)]
@@ -146,12 +144,12 @@ impl AsrBridge for CompositeAsrBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+    use speechmesh_asr::{AsrSession, RecognitionOptions};
     use speechmesh_core::{
         AudioFormat, Capability, CapabilityDomain, ProviderSelectionMode, RuntimeMode, SessionId,
         StreamMode,
     };
-    use speechmesh_asr::{AsrSession, RecognitionOptions};
-    use serde_json::Value;
     use std::sync::Arc;
     use tokio::sync::mpsc;
 

@@ -7,8 +7,8 @@ use speechmesh_core::{
     AudioEncoding, AudioFormat, Capability, CapabilityDomain, ProviderDescriptor, RuntimeMode,
     SessionId,
 };
-use speechmesh_tts::{StreamRequest, SynthesisInputKind, TtsSession, VoiceDescriptor};
 use speechmesh_transport::VoiceListRequest;
+use speechmesh_tts::{StreamRequest, SynthesisInputKind, TtsSession, VoiceDescriptor};
 use tokio::sync::mpsc;
 
 use super::{
@@ -302,8 +302,7 @@ impl TtsBridge for QwenHttpTtsBridge {
                                         })
                                         .await;
                                 }
-                                let _ =
-                                    event_tx.send(BridgeTtsEvent::Ended { reason: None }).await;
+                                let _ = event_tx.send(BridgeTtsEvent::Ended { reason: None }).await;
                             }
                             Err(error) => {
                                 let _ = event_tx

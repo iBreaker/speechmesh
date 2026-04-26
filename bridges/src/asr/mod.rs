@@ -359,10 +359,7 @@ pub(crate) fn default_audio_filename(format: &speechmesh_core::AudioFormat) -> &
 }
 
 /// 过滤保留的 provider options
-pub(crate) fn filter_reserved_provider_options(
-    options: &Value,
-    reserved: &[&str],
-) -> Value {
+pub(crate) fn filter_reserved_provider_options(options: &Value, reserved: &[&str]) -> Value {
     let Some(object) = options.as_object() else {
         return Value::Null;
     };
