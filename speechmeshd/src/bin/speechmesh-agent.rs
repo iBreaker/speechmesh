@@ -19,7 +19,9 @@ Examples:
 Notes:
   - This process is a lightweight, long-running device agent.
   - It only connects to the SpeechMesh server /agent endpoint.
-  - play_audio tasks are executed locally through ffplay.
+  - play_audio tasks are executed by a local player process (ffplay by default).
+  - Override player command with SPEECHMESH_PLAYBACK_CMD when needed (for example on Android/Termux).
+  - Set SPEECHMESH_PAD_PLAYER_CMD to force the iPad-only native player binary.
   - Playback uses the operating system current default output device.";
 
 const RUN_AFTER_HELP: &str = "\
@@ -29,7 +31,9 @@ Examples:
 
 Behavior:
   - This command is long-running and automatically reconnects on disconnect.
-  - play_audio streams chunks to a local ffplay process.
+  - play_audio streams chunks to a local player process (ffplay by default, mpv fallback).
+  - On iPad/iOS set SPEECHMESH_PAD_PLAYER_CMD to the dedicated player binary, e.g. 'speechmesh-pad-speaker'.
+  - Set SPEECHMESH_PLAYBACK_CMD to force a specific command, e.g. 'mpv --no-video --really-quiet -'.
   - Local playback follows system default output (no fixed headset/speaker binding).";
 
 #[derive(Debug, Parser)]

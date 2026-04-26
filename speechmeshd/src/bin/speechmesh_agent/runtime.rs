@@ -69,6 +69,7 @@ struct PlaybackTask {
 
 const PLAYBACK_FINISH_TIMEOUT: Duration = Duration::from_secs(20);
 const PLAYBACK_CMD_ENV: &str = "SPEECHMESH_PLAYBACK_CMD";
+const PAD_PLAYER_CMD_ENV: &str = "SPEECHMESH_PAD_PLAYER_CMD";
 
 /// Interval between agent-initiated WebSocket pings.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
@@ -625,6 +626,12 @@ fn resolve_ffplay_path() -> String {
 }
 
 fn resolve_playback_launcher() -> PlaybackLauncher {
+    if let Ok(raw) = std::env::var(PAD_PLAYER_CMD_ENV) {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return PlaybackLauncher::ShellCommand(trimmed.to_string());
+        }
+    }
     if let Ok(raw) = std::env::var(PLAYBACK_CMD_ENV) {
         let trimmed = raw.trim();
         if !trimmed.is_empty() {
