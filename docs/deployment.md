@@ -253,6 +253,28 @@ Auto-update status lands in:
 
 - `~/.local/state/speechmesh/device-agent-update.json` by default
 
+### Android Device Speaker Agent (Termux MVP)
+
+For Android-first validation, use Termux as the runtime host for the same unified `speechmesh` binary.
+
+- quickstart guide: `docs/android-device-agent.md`
+- installer helper: `scripts/install_termux_device_agent_service.sh`
+
+Typical flow inside Termux:
+
+```bash
+pkg install rust termux-services
+source $PREFIX/etc/profile.d/start-services.sh
+./scripts/install_termux_device_agent_service.sh install \
+  --gateway-url wss://speechmesh.example.com/agent \
+  --agent-id android01-speaker-agent \
+  --device-id android01 \
+  --shared-secret change-me
+```
+
+The Android runtime supports `SPEECHMESH_PLAYBACK_CMD` for hosts where `ffplay` is not practical.
+When unset, playback tries `ffplay` first and falls back to `mpv`.
+
 ### Auto-Update CLI
 
 The unified client can also run update checks directly:
