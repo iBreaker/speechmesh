@@ -136,6 +136,15 @@ The helper script:
 4. applies `deploy/k8s/speechmesh.yaml` with runtime substitutions
 5. waits for the `apps/speechmesh` rollout
 
+The Kubernetes manifest enables MiniMax TTS by default for production playback. The
+gateway pod expects a namespace-local secret named `speechmesh-minimax` with:
+
+- `MINIMAX_API_KEY`
+- `MINIMAX_GROUP_ID`
+
+Without that secret, `discover` and `doctor` will show no TTS providers and
+`speechmesh say` cannot synthesize audio for device playback.
+
 ### macOS Apple ASR Agent
 
 The repository includes:
