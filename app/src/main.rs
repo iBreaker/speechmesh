@@ -83,10 +83,10 @@ Examples:
   speechmesh check-update --manifest-url https://example.com/speechmesh.json
   speechmesh self-update --manifest-url https://example.com/speechmesh.json --dry-run
   speechmesh auto-update --manifest-url https://example.com/speechmesh.json --interval-secs 300
-  speechmesh say --device mac01 --text \"你好\"
+  speechmesh say --device mac03 --text \"你好\"
   speechmesh versions --json
-  speechmesh agent status --device mac01 --json
-  speechmesh agent run --agent-id mac01-speaker-agent --device-id mac01
+  speechmesh agent status --device mac03 --json
+  speechmesh agent run --agent-id mac03-speaker-agent --device-id mac03
 
 Notes:
   - Legacy wrapper binaries (`speechmesh-cli`, `speechmesh-agent`) are optional compatibility shims and are only present if installed via `--legacy-compat wrap`.
