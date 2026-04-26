@@ -12,8 +12,8 @@ mod runtime;
 
 const CLI_AFTER_HELP: &str = "\
 Examples:
-  speechmesh agent run --agent-id mac01-agent --device-id mac01
-  speechmesh agent --config ~/.speechmesh/config.yml run --agent-id mac01-agent --device-id mac01
+  speechmesh agent run --agent-id mac03-agent --device-id mac03
+  speechmesh agent --config ~/.speechmesh/config.yml run --agent-id mac03-agent --device-id mac03
   speechmesh agent run --gateway-url ws://127.0.0.1:8765/agent --shared-secret secret
 
 Notes:

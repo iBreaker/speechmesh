@@ -189,9 +189,9 @@ Typical flow:
   --shared-secret "change-me"
 ./scripts/install_device_agent_service.sh install \
   --gateway-url wss://speechmesh.example.com/agent \
-  --agent-id mac01-speaker-agent \
-  --agent-name "Mac 01 Speaker Agent" \
-  --device-id mac01 \
+  --agent-id mac03-speaker-agent \
+  --agent-name "Mac 03 Speaker Agent" \
+  --device-id mac03 \
   --shared-secret "change-me" \
   --update-manifest-url https://speechmesh.example.com/releases/speechmesh.json
 # on Linux host (systemd --user):
