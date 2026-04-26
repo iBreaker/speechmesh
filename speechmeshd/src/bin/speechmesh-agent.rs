@@ -215,15 +215,15 @@ fn resolve_profile<'a>(
     selected: Option<&str>,
 ) -> Option<&'a ProfileConfig> {
     let config = config?;
-    if let Some(name) = selected
-        && let Some(profile) = config.profiles.get(name)
-    {
-        return Some(profile);
+    if let Some(name) = selected {
+        if let Some(profile) = config.profiles.get(name) {
+            return Some(profile);
+        }
     }
-    if let Some(name) = config.active_profile.as_deref()
-        && let Some(profile) = config.profiles.get(name)
-    {
-        return Some(profile);
+    if let Some(name) = config.active_profile.as_deref() {
+        if let Some(profile) = config.profiles.get(name) {
+            return Some(profile);
+        }
     }
     if let Some(profile) = config.profiles.get("default") {
         return Some(profile);
@@ -275,10 +275,10 @@ fn parse_file_config(raw: &str) -> Result<FileConfig> {
                     continue;
                 }
                 assign_profile_value(&mut config.default_profile, trimmed)?;
-                if let Some((key, value)) = split_key_value(trimmed)
-                    && key == "active_profile"
-                {
-                    config.active_profile = Some(value.to_string());
+                if let Some((key, value)) = split_key_value(trimmed) {
+                    if key == "active_profile" {
+                        config.active_profile = Some(value.to_string());
+                    }
                 }
             }
             2 if in_profiles && trimmed.ends_with(':') => {
